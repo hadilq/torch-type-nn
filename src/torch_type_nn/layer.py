@@ -26,6 +26,7 @@ import math
 import torch
 from torch import nn
 
+from .edits import Edit, grow_index, keep_index
 from .functional import and_or, readout
 
 __all__ = ["AndOr", "uniform"]
@@ -79,6 +80,9 @@ class AndOr(nn.Module):
         self.probe = False      # True while this layer is the depth probe
         self.born = 0           # training step at birth
         self.track_stats = False
+        # When a list, every parameter replacement is appended to it as an
+        # :class:`~torch_type_nn.edits.Edit`, so a stock optimizer can follow.
+        self.edit_sink: list | None = None
         f = {"device": device, "dtype": dtype}
         self.weight = nn.Parameter(torch.zeros(m, R, n, **f))
         self.bias = nn.Parameter(torch.ones(m, R, **f))
@@ -186,9 +190,15 @@ class AndOr(nn.Module):
 
     # -------------------------------------------------------- structure edits
 
-    def _set(self, name: str, value: torch.Tensor) -> None:
+    def _set(self, name: str, value: torch.Tensor, dim: int | None = None,
+             index: torch.Tensor | None = None) -> None:
         if name in self._parameters:
-            self._parameters[name] = nn.Parameter(value.contiguous())
+            old = self._parameters[name]
+            new = nn.Parameter(value.contiguous())
+            self._parameters[name] = new
+            if self.edit_sink is not None and index is not None:
+                d = dim if dim >= 0 else old.dim() + dim
+                self.edit_sink.append(Edit(old, new, d, index))
         else:
             self._buffers[name] = value.contiguous()
 
@@ -211,7 +221,8 @@ class AndOr(nn.Module):
         for name, fill in self._or_tensors():
             t = getattr(self, name)
             pad = _full((t.shape[0], 1, *t.shape[2:]), fill, t.dtype, t.device)
-            self._set(name, torch.cat([t.detach(), pad], 1))
+            self._set(name, torch.cat([t.detach(), pad], 1), 1,
+                      grow_index(t.shape[1], t.device))
 
     @torch.no_grad()
     def add_or(self, unit: int, weight: torch.Tensor | None = None, bias: float = 1.0,
@@ -251,7 +262,8 @@ class AndOr(nn.Module):
             return
         idx = keep.nonzero().flatten()
         for name, _ in self._or_tensors():
-            self._set(name, getattr(self, name).detach().index_select(1, idx))
+            self._set(name, getattr(self, name).detach().index_select(1, idx), 1,
+                      keep_index(idx))
 
     @torch.no_grad()
     def add_unit(self) -> int:
@@ -259,7 +271,8 @@ class AndOr(nn.Module):
         for name, fill in self._unit_tensors():
             t = getattr(self, name)
             pad = _full((1, *t.shape[1:]), fill, t.dtype, t.device)
-            self._set(name, torch.cat([t.detach(), pad], 0))
+            self._set(name, torch.cat([t.detach(), pad], 0), 0,
+                      grow_index(t.shape[0], t.device))
         self.out_features += 1
         return self.out_features - 1
 
@@ -267,7 +280,8 @@ class AndOr(nn.Module):
     def drop_unit(self, unit: int) -> None:
         keep = _without(self.out_features, unit, self.weight.device)
         for name, _ in self._unit_tensors():
-            self._set(name, getattr(self, name).detach().index_select(0, keep))
+            self._set(name, getattr(self, name).detach().index_select(0, keep), 0,
+                      keep_index(keep))
         self.out_features -= 1
 
     @torch.no_grad()
@@ -276,7 +290,8 @@ class AndOr(nn.Module):
         so the layer computes the same function (Coq: widen_preserves)."""
         for name in ("weight", *_ORN_BUFFERS):
             t = getattr(self, name)
-            self._set(name, torch.cat([t.detach(), torch.zeros_like(t[..., :1])], -1))
+            self._set(name, torch.cat([t.detach(), torch.zeros_like(t[..., :1])], -1), -1,
+                      grow_index(t.shape[-1], t.device))
         self.in_features += 1
         self._resize_stats()
 
@@ -284,7 +299,8 @@ class AndOr(nn.Module):
     def drop_input(self, j: int) -> None:
         keep = _without(self.in_features, j, self.weight.device)
         for name in ("weight", *_ORN_BUFFERS):
-            self._set(name, getattr(self, name).detach().index_select(-1, keep))
+            self._set(name, getattr(self, name).detach().index_select(-1, keep), -1,
+                      keep_index(keep))
         self.in_features -= 1
         self._resize_stats()
 

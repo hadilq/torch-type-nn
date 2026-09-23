@@ -65,6 +65,25 @@ exact. Growth is gated on an unexplained residual (`MSE > Var(t) / N`).
 Depth edits fold the best affine fit between `x` and `F(x)` into the next
 layer, so they are near-exact. Everything reads training data only.
 
+**Any architecture, any optimizer.** The scaler is written against a
+small protocol (`torch_type_nn.protocol.Scalable`): the rule lives in
+`StructureScaler`, and what an item *is* (how to insert an identity, ablate
+it exactly, remove it) comes from an adapter. `TypeNN` is wrapped in
+`TypeNNAdapter` automatically. `ScalableMLP` (`Linear`/ReLU stacks) is
+the second family: `MLPAdapter` grows and prunes its width and depth; its
+results are in [BOARD.md](BOARD.md#the-rule-on-an-mlp-step-6). See
+[docs/ADAPTERS.md](docs/ADAPTERS.md) for writing an adapter. Stock `torch.optim` optimizers work too:
+structural edits are reported as `Edit`s with index maps, and
+`follow_structure` remaps the optimizer state through them.
+
+**Width growth next to the depth probe.** The reference rule cannot grow
+width in a network born with depth <= 2 (`n m <= 11`) once a depth probe
+exists. `TypeNNAdapter(model, width_through_depth_probe=True)` lifts that;
+on Friedman #1 it takes type-nn from 4.7x the noise floor to the best model
+on the task, and it changes no task of the original board beyond noise
+([BOARD.md](BOARD.md#larger-data-step-7)). The default is still the
+reference behaviour.
+
 Memory note: the evidence rule re-evaluates the pairs of the current
 epoch, so the scaler keeps one epoch of `(x, t)` in memory.
 

@@ -26,7 +26,15 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from torch_type_nn import StructureScaler, TypeAdam, TypeNN, mse_loss, readout
+from torch_type_nn import (
+    ScalableMLP,
+    StructureScaler,
+    TypeAdam,
+    TypeNN,
+    TypeNNAdapter,
+    mse_loss,
+    readout,
+)
 
 SPLIT_SEED = 34972
 LR_SCALE = 0.1
@@ -146,9 +154,18 @@ class MLP(nn.Module):
 def train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device):
     n = Xtr.shape[0]
     steps = math.ceil(n / batch)
-    if kind == "type-nn":
+    if kind in ("type-nn", "type-nn-through"):
         model = TypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
         opt = TypeAdam(model, lr=lr * LR_SCALE)
+        target = (TypeNNAdapter(model, width_through_depth_probe=True)
+                  if kind == "type-nn-through" else model)
+        scaler = StructureScaler(target, opt, epochs=epochs, steps_per_epoch=steps)
+        scaler.begin()
+    elif kind == "mlp-scaled":
+        # starts at one hidden layer of max(2, m) units; width and depth are
+        # grown and pruned by the same rule, the optimizer is stock Adam
+        model = ScalableMLP(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
+        opt = torch.optim.Adam(model.parameters(), lr=lr * LR_SCALE)
         scaler = StructureScaler(model, opt, epochs=epochs, steps_per_epoch=steps)
         scaler.begin()
     else:
@@ -239,6 +256,8 @@ def cell(task, kind, seeds, batch, device, verbose):
             rec["layers"].append(model.depth)
             for k, v in vars(scaler.counters).items():
                 rec[k].append(v)
+            if kind == "mlp-scaled":
+                rec.setdefault("hidden", []).append(model.structure())
         else:
             rec["layers"].append(2)
         if verbose:
@@ -257,14 +276,17 @@ def cell(task, kind, seeds, batch, device, verbose):
         v = [x for x in v if x is not None]
         return statistics.stdev(v) if len(v) > 1 else 0.0
 
-    out = {"impl": "torch-type-nn" if kind == "type-nn" else "torch-mlp", "task": task,
+    impl = {"type-nn": "torch-type-nn", "type-nn-through": "torch-type-nn-through",
+            "mlp-scaled": "torch-mlp-scaled"}.get(kind, "torch-mlp")
+    out = {"impl": impl, "task": task,
            "seeds": seeds, "epochs": epochs, "lr": lr, "batch_size": batch,
            "hold_mse": mean(rec["hold_mse"]), "hold_mse_sd": sd(rec["hold_mse"]),
            "hold_acc": mean(rec["hold_acc"]), "hold_acc_sd": sd(rec["hold_acc"]),
            "mse": mean(rec["mse"]), "acc": mean(rec["acc"]),
            "params": mean(rec["params"]), "params_sd": sd(rec["params"]),
            "train_s": mean(rec["train_s"]), "us_per_infer": us,
-           "init_layers": TypeNN(n_in, n_out).birth_depth if kind == "type-nn" else 2,
+           "init_layers": TypeNN(n_in, n_out).birth_depth if kind.startswith("type-nn") else 2,
+           "hidden": rec.get("hidden"),
            "layers": mean(rec["layers"])}
     for k in ("or_add", "or_drop", "and_add", "and_drop", "layer_add", "layer_drop"):
         out[k] = mean(rec[k]) if rec[k] else 0.0
@@ -274,7 +296,8 @@ def cell(task, kind, seeds, batch, device, verbose):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("task", nargs="?", default="all", choices=["all", *TASKS])
-    ap.add_argument("model", nargs="?", default="all", choices=["all", "type-nn", "mlp"])
+    ap.add_argument("model", nargs="?", default="all",
+                    choices=["all", "type-nn", "type-nn-through", "mlp", "mlp-scaled"])
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--device", default="cpu")
@@ -283,7 +306,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     torch.set_num_threads(a.threads)
     tasks = list(TASKS) if a.task == "all" else [a.task]
-    kinds = ["type-nn", "mlp"] if a.model == "all" else [a.model]
+    kinds = ["type-nn", "mlp", "mlp-scaled"] if a.model == "all" else [a.model]
     for task in tasks:
         for kind in kinds:
             print(json.dumps(cell(task, kind, a.seeds, a.batch_size, a.device, a.verbose)),

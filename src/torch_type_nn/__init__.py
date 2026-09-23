@@ -13,10 +13,14 @@ https://github.com/hadilq/type-nn, https://hadilq.com/posts/train-the-knowledge/
 from importlib.metadata import PackageNotFoundError, version
 
 from . import functional
+from .adapters import MLPAdapter, TypeNNAdapter
+from .edits import Edit, follow_structure
 from .functional import and_or, readout
 from .layer import AndOr
+from .mlp import ScalableMLP, TrackedLinear
 from .network import TypeNN, birth_depth
 from .optim import TypeAdam
+from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable, Trial
 from .scaling import StructureScaler
 from .train import FitResult, fit, mse_loss
 
@@ -28,4 +32,6 @@ except PackageNotFoundError:  # running from a checkout without install
 __all__ = [
     "AndOr", "TypeNN", "TypeAdam", "StructureScaler", "fit", "FitResult", "mse_loss",
     "birth_depth", "and_or", "readout", "functional", "__version__",
+    "Scalable", "Item", "Trial", "EditContext", "WIDTH", "DEGREE", "DEPTH",
+    "TypeNNAdapter", "MLPAdapter", "ScalableMLP", "TrackedLinear", "Edit", "follow_structure",
 ]

@@ -6,6 +6,7 @@ import torch
 from helpers import D, assert_ulps
 
 from torch_type_nn import AndOr, StructureScaler, TypeAdam, TypeNN, birth_depth, fit, mse_loss
+from torch_type_nn.adapters.typenn import dev_column, dev_layer, dev_or
 from torch_type_nn.scaling import DONE, FIT, GROW, PRUNE, phase_at
 
 
@@ -57,13 +58,13 @@ def test_distance_from_identity():
         for k in range(3):
             l.weight[k, 0, k] = 1.0             # carrier
             l.add_or(k)                          # x 1
-    assert all(StructureScaler.dev_or(l, k, 1) == 0.0 for k in range(3))
-    assert StructureScaler.dev_layer(l) == 0.0
+    assert all(dev_or(l, k, 1) == 0.0 for k in range(3))
+    assert dev_layer(l) == 0.0
     with torch.no_grad():
         l.weight[1, 0, 2] = 0.5
-    assert StructureScaler.dev_layer(l) > 0.0
-    assert StructureScaler.dev_column(l, 0) > 0.0
-    assert math.isinf(StructureScaler.dev_layer(AndOr(3, 2, dtype=D)))
+    assert dev_layer(l) > 0.0
+    assert dev_column(l, 0) > 0.0
+    assert math.isinf(dev_layer(AndOr(3, 2, dtype=D)))
 
 
 def test_schedule_and_threshold():
@@ -264,3 +265,64 @@ def _check_prunable_structure(net):
     L = net.layers
     assert all(L[i].out_features == L[i + 1].in_features for i in range(net.depth - 1))
     assert all(bool((l.num_ors() >= 1).all()) for l in L)
+
+
+def test_width_through_depth_probe():
+    """Opt-in: a width probe crossing the depth probe (carried on a carrier
+    Or) is exact; ablation undoes exactly; dropping it restores the shapes."""
+    from torch_type_nn.adapters import TypeNNAdapter
+    from torch_type_nn.protocol import DEPTH, WIDTH, EditContext
+
+    def ctx():
+        return EditContext(step=0, noise=0.0, generator=torch.Generator().manual_seed(1))
+
+    net = TypeNN(10, 1, seed=3, dtype=D)          # birth depth 2: the blocked case
+    assert net.depth == 2
+    ref_adapter = TypeNNAdapter(net)
+    a = TypeNNAdapter(net, width_through_depth_probe=True)
+    X = torch.randn(50, 10, dtype=D)
+    a.add_probe(DEPTH, 1, ctx())                 # 10 -> 1 -> [probe 1x1] -> 1
+    with torch.no_grad():                        # (a depth probe is an identity only
+        before = net(X)                          #  to first order: F(x), not x)
+    assert ref_adapter.probe_sites(WIDTH) == [], "the reference rule has no width site"
+    assert a.probe_sites(WIDTH) == [0]
+    a.add_probe(WIDTH, 0, ctx())
+    assert [l.out_features for l in net.layers] == [2, 2, 1]
+    with torch.no_grad():
+        assert_ulps(net(X), before)
+    item = a.probe_at(WIDTH, 0)
+    with torch.no_grad():
+        a._consumer(0).weight[..., item.address[1]] = 0.2
+        moved = net(X)
+    undo = a.ablate(item)
+    undo()
+    with torch.no_grad():
+        assert torch.equal(net(X), moved)
+    a.ablate(item)
+    with torch.no_grad():
+        ablated = net(X)
+    a._drop_coordinate(*item.address)
+    assert [l.out_features for l in net.layers] == [1, 1, 1]
+    assert all(net.layers[i].out_features == net.layers[i + 1].in_features for i in range(2))
+    with torch.no_grad():
+        assert_ulps(net(X), ablated)
+
+
+def test_width_through_depth_probe_trains_and_grows():
+    from torch_type_nn.adapters import TypeNNAdapter
+
+    g = torch.Generator().manual_seed(0)
+    X = 2 * torch.rand(200, 10, dtype=D, generator=g) - 1
+    Y = (torch.sin(3 * X[:, 0] * X[:, 1]) + X[:, 2] ** 2).unsqueeze(1) / 2
+    net = TypeNN(10, 1, seed=3, dtype=D)
+    opt = TypeAdam(net, lr=0.003)
+    E, B = 30, 16
+    sc = StructureScaler(TypeNNAdapter(net, width_through_depth_probe=True), opt,
+                         epochs=E, steps_per_epoch=math.ceil(200 / B))
+    sc.begin()
+    for _ in range(E):
+        run_epoch(net, opt, sc, X, Y, batch=B)
+        sc.epoch_end()
+    sc.end()
+    _check_invariants(net, 10, 1)
+    assert sc.counters.or_add > 0, "width grows although the birth depth is 2"

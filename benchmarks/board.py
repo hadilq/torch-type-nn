@@ -17,7 +17,8 @@ from pathlib import Path
 HERE = Path(__file__).parent
 ORDER = ["xor", "iris", "wine", "wdbc", "diabetes", "ionosphere"]
 NAMES = {"type-nn": "C type-nn", "c-mlp": "C c-mlp",
-         "torch-type-nn": "torch-type-nn", "torch-mlp": "torch MLP"}
+         "torch-type-nn": "torch-type-nn", "torch-mlp": "torch MLP",
+         "torch-mlp-scaled": "torch MLP, scaled"}
 
 
 def read(paths):
@@ -67,18 +68,21 @@ def main(argv=None):
                        f"| {r['train_s']:.2f} | {r['us_per_infer']:.1f} |")
         tt = rows.get((t, "torch-type-nn"))
         ct, cm = rows.get((t, "type-nn")), rows.get((t, "c-mlp"))
-        for other, label in ((ct, "C type-nn"), (cm, "C c-mlp")):
+        ms, mf = rows.get((t, "torch-mlp-scaled")), rows.get((t, "torch-mlp"))
+        pairs = [(tt, ct, "torch-type-nn", "C type-nn"), (tt, cm, "torch-type-nn", "C c-mlp"),
+                 (ms, mf, "torch MLP, scaled", "torch MLP (fixed)")]
+        for tt, other, me, label in pairs:
             if tt and other:
                 v = verdict(tt, other)
                 ratio = tt["params"] / other["params"]
                 if v is None:
-                    notes.append(f"- **{t}**, torch-type-nn vs {label}: fit only; "
+                    notes.append(f"- **{t}**, {me} vs {label}: fit only; "
                                  f"params {ratio:.2f}×")
                 else:
                     d, se2, clear = v
                     word = ("lower" if d < 0 else "higher") + (", clear" if clear
                                                               else ", within noise")
-                    notes.append(f"- **{t}**, torch-type-nn vs {label}: hold MSE {word} "
+                    notes.append(f"- **{t}**, {me} vs {label}: hold MSE {word} "
                                  f"({d:+.4f}, 2se {se2:.4f}); params {ratio:.2f}×")
     print("\n".join(out))
     print()

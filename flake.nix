@@ -96,6 +96,8 @@
           # the board: nix run .#bench -- iris type-nn --seeds 5
           bench = script "tnn-bench" "${devPython}/bin/python benchmarks/bench.py \"$@\"";
           # markdown board vs the C reference: nix run .#board -- benchmarks/out/*.jsonl
+          # larger data (digits, Friedman #1): nix run .#scale -- all --seeds 5
+          scale = script "tnn-scale" "${devPython}/bin/python benchmarks/scale.py \"$@\"";
           board = script "tnn-board" "${devPython}/bin/python benchmarks/board.py \"$@\"";
         };
 

@@ -71,3 +71,32 @@ Ors. Free slots hold the identity Or, which is exactly 1, and get no
 gradient. Dropped Ors leave a free slot until `compact()` removes slot
 columns that are free in every unit (done at every prune boundary and at
 the end of training). None of this changes the function.
+
+## 5. Width growth next to the depth probe (opt-in change)
+
+The reference grows width only on junctions that do not touch the depth
+probe (`tnn_grow_width` skips a pair when either layer is the probe). A
+network born with depth `D <= 2` (`round(ln(1 + n m)) <= 2`, i.e. `n m <= 11`)
+then has **no** width site as soon as the first depth probe is inserted: two
+live layers plus the probe give two junctions, and both touch it. The depth
+probe is only moved, never removed, during growth, so width stays blocked
+for the whole grow phase.
+
+The C board shows it: the two tasks born at depth <= 2 are the only ones
+with zero width promotions (`or_add`): xor (born 1) and diabetes (born 2).
+Every task born at depth >= 3 grows width. On diabetes this is harmless (the
+data are small and nearly linear); on Friedman #1 (10 inputs, 1 output,
+born at depth 2, 7000 training rows) it caps type-nn at width 1 and a
+hold-out MSE several times the noise floor (`benchmarks/scale.py`).
+
+`TypeNNAdapter(model, width_through_depth_probe=True)` lifts the block. A
+width probe on a junction that crosses the depth probe adds the unit to the
+producer, a carrier Or for it to the probe layer (`w = e_k`, `b = 0`,
+`a = 1`: the probe layer stays square and identity-like), and a zero column
+to the real consumer beyond; the edit is exact because the consumer reads
+the unit with weights of exactly 0. Displacement, evidence and removal are
+measured at the real consumer. With the option on, the identity layer also
+carries an existing width probe instead of retiring it when inserted.
+
+The default keeps the reference behaviour, so the validated port still
+reproduces C; the effect of the option is measured in BOARD.md.
