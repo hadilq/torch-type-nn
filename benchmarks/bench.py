@@ -261,50 +261,52 @@ def us_per_infer(model, X, min_s=0.2):
 
 # ------------------------------------------------------------------- board
 
-def cell(task, kind, seeds, batch, device, verbose):
-    file, epochs, lr = TASKS[task]
-    if file is None:
-        Xtr = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=torch.float64)
-        Ytr = torch.tensor([[0], [1], [1], [0]], dtype=torch.float64)
-        Xte = Yte = None
-        classify = True
-    else:
-        Xtr, Ytr, Xte, Yte, classify = split(task)
+_DATA_CACHE: dict = {}
+
+
+def task_data(task):
+    """(Xtr, Ytr, Xte, Yte, classify) on the CPU; cached per process."""
+    if task not in _DATA_CACHE:
+        file, _, _ = TASKS[task]
+        if file is None:
+            Xtr = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=torch.float64)
+            Ytr = torch.tensor([[0], [1], [1], [0]], dtype=torch.float64)
+            _DATA_CACHE[task] = (Xtr, Ytr, None, None, True)
+        else:
+            _DATA_CACHE[task] = split(task)
+    return _DATA_CACHE[task]
+
+
+def run_seed(task, kind, s, batch, device, threads=1, timing=False):
+    """One initialisation seed of one cell: a plain dict (picklable, so it can
+    run in a worker process). Seed ``s`` fully determines the run, so the
+    result does not depend on which process runs it or in what order."""
+    torch.set_num_threads(threads)
+    _, epochs, lr = TASKS[task]
+    Xtr, Ytr, Xte, Yte, classify = task_data(task)
     Xtr, Ytr = Xtr.to(device), Ytr.to(device)
     if Xte is not None:
         Xte, Yte = Xte.to(device), Yte.to(device)
     n_in, n_out = Xtr.shape[1], Ytr.shape[1]
-    rec = {k: [] for k in ("hold_mse", "hold_acc", "mse", "acc", "params", "train_s",
-                           "layers", "or_add", "or_drop", "and_add", "and_drop",
-                           "layer_add", "layer_drop")}
-    us = None
-    for s in range(seeds):
-        seed = SPLIT_SEED + 7919 * (s + 1)
-        t0 = time.perf_counter()
-        model, scaler = train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device)
-        rec["train_s"].append(time.perf_counter() - t0)
-        mse, acc = metrics(model, Xtr, Ytr, classify)
-        rec["mse"].append(mse)
-        rec["acc"].append(acc)
-        if Xte is not None:
-            hm, ha = metrics(model, Xte, Yte, classify)
-            rec["hold_mse"].append(hm)
-            rec["hold_acc"].append(ha)
-        rec["params"].append(model.num_params())
-        if scaler:
-            rec["layers"].append(model.depth)
-            for k, v in vars(scaler.counters).items():
-                rec[k].append(v)
-            rec.setdefault("structure", []).append(model.structure())
-        else:
-            rec["layers"].append(2)
-        if verbose:
-            hold = rec["hold_mse"][-1] if Xte is not None else "n/a"
-            print(f"  {task} {kind} seed {s}: hold_mse {hold}"
-                  f" train_mse {mse:.2e} params {model.num_params()} layers {rec['layers'][-1]}"
-                  f" {rec['train_s'][-1]:.1f}s", file=sys.stderr)
-        if s + 1 == seeds:
-            us = us_per_infer(model, Xtr)
+    t0 = time.perf_counter()
+    model, scaler = train(kind, n_in, n_out, SPLIT_SEED + 7919 * (s + 1), Xtr, Ytr,
+                          epochs, lr, batch, device)
+    r = {"train_s": time.perf_counter() - t0}
+    r["mse"], r["acc"] = metrics(model, Xtr, Ytr, classify)
+    r["hold_mse"], r["hold_acc"] = (metrics(model, Xte, Yte, classify) if Xte is not None
+                                    else (None, None))
+    r["params"] = model.num_params()
+    r["layers"] = model.depth if scaler else 2
+    r["structure"] = model.structure() if scaler else None
+    r["counters"] = dict(vars(scaler.counters)) if scaler else {}
+    r["us_per_infer"] = us_per_infer(model, Xtr) if timing else None
+    r["n_in"], r["n_out"] = n_in, n_out
+    return r
+
+
+def aggregate(task, kind, runs, batch, device):
+    """The board row of one cell from its per-seed runs (in seed order)."""
+    _, epochs, lr = TASKS[task]
 
     def mean(v):
         v = [x for x in v if x is not None]
@@ -314,40 +316,101 @@ def cell(task, kind, seeds, batch, device, verbose):
         v = [x for x in v if x is not None]
         return statistics.stdev(v) if len(v) > 1 else 0.0
 
+    col = {k: [r[k] for r in runs] for k in runs[0] if k not in ("counters",)}
     family, rule, through = MODELS[kind]
+    n_in, n_out = runs[0]["n_in"], runs[0]["n_out"]
     out = {"impl": f"torch-{kind}", "task": task, "rule": rule,
            "width_through_depth_probe": through, "device": str(device),
-           "seeds": seeds, "epochs": epochs, "lr": lr, "batch_size": batch,
-           "hold_mse": mean(rec["hold_mse"]), "hold_mse_sd": sd(rec["hold_mse"]),
-           "hold_acc": mean(rec["hold_acc"]), "hold_acc_sd": sd(rec["hold_acc"]),
-           "mse": mean(rec["mse"]), "acc": mean(rec["acc"]),
-           "params": mean(rec["params"]), "params_sd": sd(rec["params"]),
-           "train_s": mean(rec["train_s"]), "us_per_infer": us,
+           "seeds": len(runs), "epochs": epochs, "lr": lr, "batch_size": batch,
+           "hold_mse": mean(col["hold_mse"]), "hold_mse_sd": sd(col["hold_mse"]),
+           "hold_acc": mean(col["hold_acc"]), "hold_acc_sd": sd(col["hold_acc"]),
+           "mse": mean(col["mse"]), "acc": mean(col["acc"]),
+           "params": mean(col["params"]), "params_sd": sd(col["params"]),
+           "train_s": mean(col["train_s"]), "us_per_infer": runs[-1]["us_per_infer"],
            "init_layers": TypeNN(n_in, n_out).birth_depth if family == "type-nn" else 2,
-           "structure": rec.get("structure"),
-           "layers": mean(rec["layers"])}
+           "structure": col["structure"] if any(col["structure"]) else None,
+           "layers": mean(col["layers"]),
+           "per_seed_hold_mse": col["hold_mse"]}
     for k in ("or_add", "or_drop", "and_add", "and_drop", "layer_add", "layer_drop"):
-        out[k] = mean(rec[k]) if rec[k] else 0.0
+        out[k] = mean([r["counters"].get(k, 0) for r in runs])
     return out
+
+
+def cell(task, kind, seeds, batch, device, verbose=False):
+    runs = []
+    for s in range(seeds):
+        runs.append(run_seed(task, kind, s, batch, device, torch.get_num_threads(),
+                             timing=s + 1 == seeds))
+        if verbose:
+            r = runs[-1]
+            print(f"  {task} {kind} seed {s}: hold_mse {r['hold_mse']} train_mse {r['mse']:.2e}"
+                  f" params {r['params']} layers {r['layers']} {r['train_s']:.1f}s",
+                  file=sys.stderr)
+    return aggregate(task, kind, runs, batch, device)
+
+
+def _job(args):
+    task, kind, s, batch, device, timing = args
+    return run_seed(task, kind, s, batch, device, 1, timing)
+
+
+def cells_parallel(tasks, kinds, seeds, batch, device, jobs, verbose=False):
+    """Every (task, model, seed) in its own single-threaded worker; rows come
+    back in the serial order. Wall times are measured under load (all cores
+    busy), so compare ``train_s`` only within one run."""
+    import concurrent.futures as cf
+    import multiprocessing as mp
+
+    todo = [(t, k, s, batch, device, s + 1 == seeds)
+            for t in tasks for k in kinds for s in range(seeds)]
+    # the slowest cells first, so the pool drains evenly
+    order = sorted(range(len(todo)), key=lambda i: -TASKS[todo[i][0]][1]
+                   * (1 if MODELS[todo[i][1]][0] == "mlp" else 10))
+    ctx = mp.get_context("spawn")        # CUDA and forked workers do not mix
+    results: dict[int, dict] = {}
+    with cf.ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
+        futs = {ex.submit(_job, todo[i]): i for i in order}
+        for f in cf.as_completed(futs):
+            i = futs[f]
+            results[i] = f.result()
+            if verbose:
+                t, k, s = todo[i][:3]
+                print(f"  done {t} {k} seed {s} ({len(results)}/{len(todo)})", file=sys.stderr)
+    i = 0
+    for t in tasks:
+        for k in kinds:
+            yield aggregate(t, k, [results[i + s] for s in range(seeds)], batch, device)
+            i += seeds
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("task", nargs="?", default="all", choices=["all", *TASKS])
+    ap.add_argument("task", nargs="?", default="all",
+                    help="all, or a comma-separated list of: " + ", ".join(TASKS))
     ap.add_argument("model", nargs="?", default="all",
                     help="all, or a comma-separated list of: " + ", ".join(MODELS))
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--threads", type=int, default=1)
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="worker processes, one (task, model, seed) each; 0 = all cores")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
     torch.set_num_threads(a.threads)
-    tasks = list(TASKS) if a.task == "all" else [a.task]
+    tasks = list(TASKS) if a.task == "all" else a.task.split(",")
+    if bad := [t for t in tasks if t not in TASKS]:
+        ap.error(f"unknown task(s) {bad}; choose from {list(TASKS)}")
     kinds = list(MODELS) if a.model == "all" else a.model.split(",")
     unknown = [k for k in kinds if k not in MODELS]
     if unknown:
         ap.error(f"unknown model(s) {unknown}; choose from {list(MODELS)}")
+    jobs = a.jobs or os.cpu_count() or 1
+    if jobs > 1:
+        for row in cells_parallel(tasks, kinds, a.seeds, a.batch_size, a.device, jobs,
+                                  a.verbose):
+            print(json.dumps(row), flush=True)
+        return
     for task in tasks:
         for kind in kinds:
             print(json.dumps(cell(task, kind, a.seeds, a.batch_size, a.device, a.verbose)),

@@ -26,6 +26,7 @@ import argparse
 import gzip
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -156,8 +157,37 @@ def run(task, kind, seed, B, device="cpu", data=None):
     shape = (model.structure() if hasattr(model, "structure") else None)
     return {"hold_mse": hold_mse, "hold_acc": acc, "train_mse": train_mse,
             "params": model.num_params(), "train_s": train_s, "structure": shape,
+            "layers": getattr(model, "depth", 2),
             "params_curve": curve[:: max(1, epochs // 10)],
-            "counters": vars(scaler.counters) if scaler else None}
+            "counters": dict(vars(scaler.counters)) if scaler else None}
+
+
+_SPLITS: dict = {}
+
+
+def _job(args):
+    task, kind, s, batch, device = args
+    torch.set_num_threads(1)
+    if task not in _SPLITS:
+        _SPLITS[task] = split(task)
+    return run(task, kind, bench.SPLIT_SEED + 7919 * (s + 1), batch, device, _SPLITS[task])
+
+
+def row(task, kind, runs, a, data):
+    hm = [r["hold_mse"] for r in runs]
+    layers = [r.get("layers") for r in runs if r.get("layers") is not None]
+    return {"task": task, "impl": kind, "seeds": len(runs), "batch_size": a.batch_size,
+            "device": a.device, "n_train": data[0].shape[0], "noise_floor": data[5],
+            "epochs": TASKS[task][0], "lr": TASKS[task][1],
+            "hold_mse": statistics.fmean(hm),
+            "hold_mse_sd": statistics.stdev(hm) if len(hm) > 1 else 0.0,
+            "hold_acc": (statistics.fmean(r["hold_acc"] for r in runs)
+                         if runs[0]["hold_acc"] is not None else None),
+            "train_mse": statistics.fmean(r["train_mse"] for r in runs),
+            "params": statistics.fmean(r["params"] for r in runs),
+            "layers": statistics.fmean(layers) if layers else None,
+            "train_s": statistics.fmean(r["train_s"] for r in runs),
+            "runs": runs}
 
 
 def main(argv=None):
@@ -168,6 +198,8 @@ def main(argv=None):
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="worker processes, one (task, model, seed) each; 0 = all cores")
     a = ap.parse_args(argv)
     kinds = a.models.split(",")
     unknown = [k for k in kinds if k not in bench.MODELS and k not in FIXED]
@@ -175,30 +207,30 @@ def main(argv=None):
         ap.error(f"unknown model(s) {unknown}")
     if a.device == "cpu":
         torch.set_num_threads(1)
-    for task in (list(TASKS) if a.task == "all" else [a.task]):
-        data = split(task)
+    tasks = list(TASKS) if a.task == "all" else [a.task]
+    jobs = a.jobs or os.cpu_count() or 1
+    todo = [(t, k, s, a.batch_size, a.device) for t in tasks for k in kinds
+            for s in range(a.seeds)]
+    if jobs > 1:
+        import concurrent.futures as cf
+        import multiprocessing as mp
+
+        with cf.ProcessPoolExecutor(jobs, mp_context=mp.get_context("spawn")) as ex:
+            results = list(ex.map(_job, todo))
+    else:
+        results = []
+        for j in todo:
+            results.append(_job(j))
+            r = results[-1]
+            print(f"  {j[0]} {j[1]} seed {j[2]}: hold {r['hold_mse']:.5f} acc {r['hold_acc']} "
+                  f"params {r['params']} {r['structure']} {r['train_s']:.0f}s",
+                  file=sys.stderr, flush=True)
+    i = 0
+    for task in tasks:
+        data = _SPLITS.get(task) or split(task)
         for kind in kinds:
-            runs = []
-            for s in range(a.seeds):
-                r = run(task, kind, bench.SPLIT_SEED + 7919 * (s + 1), a.batch_size,
-                        a.device, data)
-                runs.append(r)
-                print(f"  {task} {kind} seed {s}: hold {r['hold_mse']:.5f} acc {r['hold_acc']} "
-                      f"params {r['params']} {r['structure']} {r['train_s']:.0f}s",
-                      file=sys.stderr, flush=True)
-            hm = [r["hold_mse"] for r in runs]
-            out = {"task": task, "impl": kind, "seeds": a.seeds, "batch_size": a.batch_size,
-                   "device": a.device, "n_train": data[0].shape[0], "noise_floor": data[5],
-                   "epochs": TASKS[task][0], "lr": TASKS[task][1],
-                   "hold_mse": statistics.fmean(hm),
-                   "hold_mse_sd": statistics.stdev(hm) if len(hm) > 1 else 0.0,
-                   "hold_acc": (statistics.fmean(r["hold_acc"] for r in runs)
-                                if runs[0]["hold_acc"] is not None else None),
-                   "train_mse": statistics.fmean(r["train_mse"] for r in runs),
-                   "params": statistics.fmean(r["params"] for r in runs),
-                   "train_s": statistics.fmean(r["train_s"] for r in runs),
-                   "runs": runs}
-            print(json.dumps(out), flush=True)
+            print(json.dumps(row(task, kind, results[i:i + a.seeds], a, data)), flush=True)
+            i += a.seeds
 
 
 if __name__ == "__main__":

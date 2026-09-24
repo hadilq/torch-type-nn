@@ -3,8 +3,13 @@
 torch-type-nn is a port of [hadilq/type-nn](https://github.com/hadilq/type-nn)
 at commit `7333bf7`. The math is the same and is checked number for number
 (`tests/test_crosscheck_c.py`: forward, every gradient, and two per-Or Adam
-steps agree to 1e-12 on ragged layers). Where the port behaves differently,
-it is listed here.
+steps agree to 1e-12 on ragged layers). Both C scaling rules are ported:
+`rule="bic"` is `type_nn_scale.c` (C's `type-nn`) and `rule="threshold"` is
+`type_nn_overfit_scale.c` (C's `type-nn-overfit`); the defaults follow the
+architecture (threshold rule, width on every junction), and
+`TypeNNAdapter(width_through_depth_probe=False)` with either rule is the
+exact C configuration (`ref-*` on the board). Where the port behaves
+differently, it is listed here.
 
 ## 1. Pruning counts parameters exactly
 
@@ -72,31 +77,55 @@ gradient. Dropped Ors leave a free slot until `compact()` removes slot
 columns that are free in every unit (done at every prune boundary and at
 the end of training). None of this changes the function.
 
-## 5. Width growth next to the depth probe (opt-in change)
+## 5. Width on every junction (default)
 
 The reference grows width only on junctions that do not touch the depth
 probe (`tnn_grow_width` skips a pair when either layer is the probe). A
 network born with depth `D <= 2` (`round(ln(1 + n m)) <= 2`, i.e. `n m <= 11`)
-then has **no** width site as soon as the first depth probe is inserted: two
-live layers plus the probe give two junctions, and both touch it. The depth
-probe is only moved, never removed, during growth, so width stays blocked
-for the whole grow phase.
+then has no width site while the depth probe occupies the only gaps: two live
+layers plus the probe give two junctions, and both touch it. Under C's BIC
+rule the probe rarely gets promoted on such networks, and the C board shows
+the effect: xor (born 1) and diabetes (born 2) are the only tasks with zero
+width promotions. Under C's threshold rule a promoted probe adds a third live
+layer and with it a junction away from the probe, so xor does grow width
+there, while diabetes still does not.
 
-The C board shows it: the two tasks born at depth <= 2 are the only ones
-with zero width promotions (`or_add`): xor (born 1) and diabetes (born 2).
-Every task born at depth >= 3 grows width. On diabetes this is harmless (the
-data are small and nearly linear); on Friedman #1 (10 inputs, 1 output,
-born at depth 2, 7000 training rows) it caps type-nn at width 1 and a
-hold-out MSE several times the noise floor (`benchmarks/scale.py`).
-
-`TypeNNAdapter(model, width_through_depth_probe=True)` lifts the block. A
-width probe on a junction that crosses the depth probe adds the unit to the
-producer, a carrier Or for it to the probe layer (`w = e_k`, `b = 0`,
-`a = 1`: the probe layer stays square and identity-like), and a zero column
-to the real consumer beyond; the edit is exact because the consumer reads
-the unit with weights of exactly 0. Displacement, evidence and removal are
-measured at the real consumer. With the option on, the identity layer also
+The architecture grows width between any two layers, so the port does so by
+default: a width probe on a junction that crosses the depth probe adds the
+unit to the producer, a carrier Or for it to the probe layer (`w = e_k`,
+`b = 0`, `a = 1`: the probe layer stays square and identity-like), and a
+zero column to the real consumer beyond; the edit is exact because the
+consumer reads the unit with weights of exactly 0. Displacement, evidence
+and removal are measured at the real consumer. The identity layer also
 carries an existing width probe instead of retiring it when inserted.
+`width_through_depth_probe=False` reproduces C.
 
-The default keeps the reference behaviour, so the validated port still
-reproduces C; the effect of the option is measured in BOARD.md.
+## 6. The threshold rule's band with batches
+
+C's `type-nn-overfit` drops items inside `theta_band = lr N^(3/4)` with `N`
+the training samples, i.e. the optimizer steps per epoch of its per-sample
+training. The port uses `S`, the optimizer steps per epoch (`N` when
+`batch_size=1`), consistent with `theta(T)` counting optimizer steps (§3).
+The order is C's: the depth probe (retired inside the band, else promoted)
+or at most one near-identity live layer, then width, then degree, each judged
+on the structure the previous axis left; a junction keeps its most-moved
+coordinate and an And its most-moved Or (the first one on a tie, as C's
+`keep_max`).
+
+## 7. Fixes that C does not have
+
+- **Mean compensation on several drops at one junction.** Dropping a
+  coordinate folds its mean into the consumer's bias (`b += w E[x_k]`), but
+  dropping an input also resets the consumer's statistics, so in C only the
+  first coordinate dropped at a junction in one boundary gets its mean; the
+  others are dropped without it. That matters under the threshold rule
+  (under the BIC rule the dropped columns were ablated to 0 first, so there
+  is nothing to fold). The port takes every mean before any drop.
+- **`end()` before the prune phase** (BIC rule). The epoch's pairs used to be
+  released at the boundary, so an `end()` called before the prune phase
+  measured on no pairs: the criterion saw only the parameter count and pruned
+  everything prunable. The pairs now stay until the next step. `fit` never
+  took this path (the last boundary always falls in the prune phase).
+- **`a >= 1` with stock optimizers.** `TypeAdam` projects the assembly index
+  after every step; a stock `torch.optim` optimizer did not, so `a` could
+  drift below 1. The scaler now attaches `keep_invariants` to any optimizer.

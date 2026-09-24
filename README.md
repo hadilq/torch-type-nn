@@ -6,10 +6,11 @@ grows and prunes its own width, degree and depth while it trains. The
 design is explained in
 [Train the knowledge](https://hadilq.com/posts/train-the-knowledge/).
 
-> Status: alpha (0.1.0.dev0). A validated port: forward, gradients and the
-> per-Or Adam step agree with the C reference to 1e-12, and the benchmark
-> board is reproduced (see [Validation](#validation)). Deliberate
-> differences from C are listed in [docs/DIFFERENCES.md](docs/DIFFERENCES.md).
+> Status: alpha (0.1.0.dev0). Forward, gradients and the per-Or Adam step
+> agree with the C reference to 1e-12, and both C scaling rules have exact
+> ports on the board (see [Validation](#validation)). Deliberate differences
+> from C are listed in [docs/DIFFERENCES.md](docs/DIFFERENCES.md); the audit
+> that led to the current defaults is in [docs/AUDIT.md](docs/AUDIT.md).
 
 ## Quick start
 
@@ -40,52 +41,62 @@ for epoch in range(E):
         y = model(x)
         loss = 0.5 * (y - t).pow(2).mean()
         opt.zero_grad(); loss.backward(); opt.step()
-        scaler.observe(x, y, t)          # the epoch's pairs feed the evidence rule
+        scaler.observe(x, y, t)          # residual statistics (and pairs, for rule="bic")
     scaler.epoch_end()                   # grow / prune at the boundary
 scaler.end()                             # last prune; no probe survives
 ```
 
 ## Structure learning
 
-A port of `type_nn_scale.c`. One dummy rule on three axes: a **probe** is
-an identity that back-prop is free to move; a probe that moved past
-`theta(T) = lr T^(3/4)` **and** pays the BIC price of its parameters,
-`n ln(MSE_without / MSE_with) > k ln n`, is promoted, and a fresh probe
-takes its place.
+One dummy rule on three axes. A **probe** is an identity that back-prop is
+free to move; a probe that back-prop moved past `theta(T) = lr T^(3/4)`
+(`T` its age in optimizer steps) is promoted, and a fresh probe takes its
+place. All scaling up happens early and all scaling down late.
 
-| axis   | probe (grow, `u < 1/3`)                                        | drop (prune, `u >= 2/3`)       |
-| ------ | -------------------------------------------------------------- | ------------------------------ |
-| width  | the previous layer grows a unit; the next meets it with 0 weights | remove the coordinate        |
-| degree | each And carries one identity Or (w ~ 0, b ~ 1)                 | remove the Or                  |
-| depth  | an identity layer in the gap with the largest mean `|dL/dx|`    | remove the layer (folded)      |
+| axis   | probe (grow, `u < 1/3`)                                           | drop (prune, `u >= 2/3`)                       |
+| ------ | ----------------------------------------------------------------- | ---------------------------------------------- |
+| width (Or)  | the previous layer grows a trained unit; the current layer reads it with a dummy weight of exactly 0 | the coordinate, when its weights are back inside the band (a junction keeps its most-moved one) |
+| degree (And)| each And carries one noisy identity Or (w ~ 0, b ~ 1)       | an Or back inside the band (an And keeps its most-moved Or: of two identity Ors one goes) |
+| depth  | an identity layer in the gap, between *any* two layers, with the largest mean `|dL/dx|` | a layer back to identity within the band (one per boundary; folded) |
 
-`MSE_without` is measured by resetting the item to its identity and
-re-evaluating the epoch's training pairs, so a removal that passed is
-exact. Growth is gated on an unexplained residual (`MSE > Var(t) / N`).
-Depth edits fold the best affine fit between `x` and `F(x)` into the next
-layer, so they are near-exact. Everything reads training data only.
+(`u = step / total`; the band is `theta_band = lr S^(3/4)`, `S` optimizer
+steps per epoch.) Growth is gated on an unexplained residual
+(`MSE > Var(t) / N`). Depth edits fold the best affine fit between `x` and
+`F(x)` into the next layer, so they are near-exact. A network is born with
+`round(ln(1 + n m))` layers, `n` inputs and `m` outputs, each layer's output
+feeding the next, as dense as an MLP.
+
+**Two rules.** `StructureScaler(..., rule=...)`:
+
+- `"threshold"` (default) is the architecture: every decision comes from
+  what back-prop did to the dummy weights; no training pair is stored or
+  re-run. It is the rule of C's `type-nn-overfit`.
+- `"bic"` adds the Bayesian-information prior of the post: a moved probe is
+  promoted only if it also pays `n ln(MSE_without / MSE_with) > k ln n`,
+  where `MSE_without` is *measured* by resetting the item to its identity
+  and re-running the epoch's training pairs (so the scaler keeps one epoch
+  of `(x, t)` in memory), and pruning ablates items while the criterion
+  `n ln MSE + K ln n` allows. It is the rule of C's `type-nn`.
+
+**Width on every junction.** By default a width probe also grows on a
+junction that crosses the depth probe (carried through the probe layer).
+C blocks width there, which leaves a network born with depth ≤ 2 no width
+site while a depth probe exists; `TypeNNAdapter(model,
+width_through_depth_probe=False)` reproduces C.
+
+Both rules and both width rules are on [BOARD.md](BOARD.md), including exact
+ports of the two C models.
 
 **Any architecture, any optimizer.** The scaler is written against a
 small protocol (`torch_type_nn.protocol.Scalable`): the rule lives in
-`StructureScaler`, and what an item *is* (how to insert an identity, ablate
-it exactly, remove it) comes from an adapter. `TypeNN` is wrapped in
-`TypeNNAdapter` automatically. `ScalableMLP` (`Linear`/ReLU stacks) is
-the second family: `MLPAdapter` grows and prunes its width and depth; its
-results are in [BOARD.md](BOARD.md#the-rule-on-an-mlp-step-6). See
-[docs/ADAPTERS.md](docs/ADAPTERS.md) for writing an adapter. Stock `torch.optim` optimizers work too:
-structural edits are reported as `Edit`s with index maps, and
-`follow_structure` remaps the optimizer state through them.
-
-**Width growth next to the depth probe.** The reference rule cannot grow
-width in a network born with depth <= 2 (`n m <= 11`) once a depth probe
-exists. `TypeNNAdapter(model, width_through_depth_probe=True)` lifts that;
-on Friedman #1 it takes type-nn from 4.7x the noise floor to the best model
-on the task, and it changes no task of the original board beyond noise
-([BOARD.md](BOARD.md#larger-data-step-7)). The default is still the
-reference behaviour.
-
-Memory note: the evidence rule re-evaluates the pairs of the current
-epoch, so the scaler keeps one epoch of `(x, t)` in memory.
+`StructureScaler`, and what an item *is* (how to insert an identity, measure
+its distance from it, remove it) comes from an adapter. `TypeNN` is wrapped
+in `TypeNNAdapter` automatically. `ScalableMLP` (`Linear`/ReLU stacks) is
+the second family: `MLPAdapter` grows and prunes its width and depth. See
+[docs/ADAPTERS.md](docs/ADAPTERS.md) for writing an adapter. Stock
+`torch.optim` optimizers work too: structural edits are reported as `Edit`s
+with index maps, `follow_structure` remaps the optimizer state through them,
+and the scaler attaches `keep_invariants` so `a >= 1` holds after every step.
 
 ## The layer
 
@@ -139,12 +150,13 @@ Two independent checks against [hadilq/type-nn](https://github.com/hadilq/type-n
 - **The board.** `benchmarks/bench.py` ports `bench.c` exactly: the same
   files, the same xorshift split and shuffle (checked row for row), per-sample
   Adam at `lr x 0.1`, the same epochs and learning rates, and 5 seeds per
-  cell. `benchmarks/board.py` compares the result with the C board run on the
-  same machine (`benchmarks/reference/`). Results: [BOARD.md](BOARD.md).
+  cell. `ref-type-nn` and `ref-type-nn-overfit` are exact configurations of
+  C's two models; `benchmarks/board.py` compares each with the C board
+  (`benchmarks/reference/`, deterministic, reproduced digit for digit) and
+  writes every table of [BOARD.md](BOARD.md) from the result files.
 
 ```sh
-nix run .#bench -- all all --seeds 5 > benchmarks/out/torch-board.jsonl
-nix run .#board -- benchmarks/out/torch-board.jsonl > BOARD.md
+nix run .#board-all      # every result on all cores, then BOARD.md's tables
 ```
 
 ## Development

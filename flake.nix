@@ -249,6 +249,19 @@
           # larger data (digits, Friedman #1): nix run .#scale -- all --seeds 5
           scale = script "tnn-scale" "Run the scale benchmark on digits and Friedman #1 (benchmarks/scale.py)" "${devPython}/bin/python benchmarks/scale.py \"$@\"";
           board = script "tnn-board" "Render BOARD tables from benchmark results (benchmarks/board.py)" "${devPython}/bin/python benchmarks/board.py \"$@\"";
+          # every benchmark result and the tables of BOARD.md, on all cores
+          board-all = script "tnn-board-all" "Regenerate all benchmark results and BOARD.md" ''
+            jobs="''${TNN_JOBS:-0}"
+            mkdir -p benchmarks/results
+            ${devPython}/bin/python benchmarks/bench.py all all --seeds 5 --jobs "$jobs" -v \
+              > benchmarks/results/board-per-sample.jsonl.tmp
+            mv benchmarks/results/board-per-sample.jsonl.tmp benchmarks/results/board-per-sample.jsonl
+            ${devPython}/bin/python benchmarks/scale.py all --seeds 5 --jobs "$jobs" \
+              > benchmarks/results/scale-batch32.jsonl.tmp
+            mv benchmarks/results/scale-batch32.jsonl.tmp benchmarks/results/scale-batch32.jsonl
+            ${devPython}/bin/python benchmarks/board.py --write BOARD.md
+            echo "wrote benchmarks/results/*.jsonl and BOARD.md"
+          '';
           # copy the pinned datasets to benchmarks/data
           data = script "tnn-data" "Copy the pinned datasets to benchmarks/data" copyData;
         } // lib.optionalAttrs onLinux {

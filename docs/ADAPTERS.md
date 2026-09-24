@@ -29,11 +29,18 @@ What an *item* is comes from an adapter implementing
 | `ablate(item)` | reset to identity in place, return undo | **undo restores bit for bit** |
 | `cost(item)` | parameters the item owns | |
 | `trial_remove(item)` | remove a layer tentatively | `undo` restores exactly |
-| `prune_candidates`, `can_remove`, `params_without`, `commit_removals` | the pool | `params_without` is the exact count; `commit_removals` of ablated items does not change the function |
+| `prune_candidates`, `can_remove`, `params_without`, `commit_removals(removed, axes)` | the pool | `params_without` is the exact count; `commit_removals` of ablated items does not change the function; it touches only the given `axes` (the threshold rule commits width, then degree) and folds each dropped coordinate's mean taken *before* any drop |
 | `set_edit_sink(list)` | report parameter replacements as `Edit`s | needed for stock optimizers |
 
 An axis an architecture does not have simply returns no sites and no
 candidates.
+
+Which methods a rule uses: the threshold rule (default) needs the probe
+methods, `displacement` for *every* item (live ones too: it is how an item
+is found back inside the band), `removal_order`/`trial_remove` for layers,
+and `prune_candidates`/`can_remove`/`commit_removals`. The BIC rule also
+uses `ablate`, `cost` and `params_without`, and the scaler re-runs the
+epoch's pairs through the model.
 
 ## Identities by architecture
 
@@ -46,7 +53,9 @@ candidates.
 ## Adapters shipped
 
 - `TypeNNAdapter` (`adapters/typenn.py`): width, degree, depth; the port of
-  `type_nn_scale.c`.
+  `type_nn_scale.c` / `type_nn_overfit_scale.c`. Width grows on every
+  junction (`width_through_depth_probe=False` reproduces C, which skips
+  junctions touching the depth probe).
 - `MLPAdapter` (`adapters/mlp.py`) for `ScalableMLP`
   (`Linear -> ReLU -> ... -> Linear [-> F]`): width and depth.
   - Width: a new hidden unit read with an all-zero column (exact).
@@ -54,10 +63,9 @@ candidates.
     an identity layer is exact in any gap *after* a ReLU; no fold is needed.
     There is no exact identity in front of the first layer, so that gap is
     never used.
-  - A depth probe does not block width growth. type-nn skips junctions
-    touching the depth probe; with one hidden layer that would leave an MLP
-    no width site at all (the first version of this adapter grew depth and
-    never width). Instead, a width probe on a junction that crosses the
+  - A depth probe does not block width growth, as for type-nn by default
+    (with one hidden layer, blocking would leave an MLP no width site at
+    all). A width probe on a junction that crosses the
     depth probe passes through it on an identity entry (weight exactly 1):
     the probe layer stays square and exact, and displacement, evidence and
     removal are measured at the real consumer beyond it.
@@ -71,7 +79,10 @@ tensors shaped like a parameter are remapped along the edit's index map
 (new slices start at 0), new parameters are added, removed ones dropped.
 Two approximations remain with stock optimizers: new slices inherit their
 tensor's scalar step count (Adam's bias correction), and weight rescaling
-done by depth folds is not applied to the optimizer's moments.
+done by depth folds is not applied to the optimizer's moments. The scaler
+also attaches `keep_invariants(optimizer, model)`, a post-step hook that
+projects every `AndOr` back to `a >= 1` (TypeAdam does this itself); call it
+yourself when training a `TypeNN` with a stock optimizer and no scaler.
 
 ## Testing an adapter
 
