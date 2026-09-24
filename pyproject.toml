@@ -24,14 +24,22 @@ dependencies = ["torch>=2.2"]
 dev = ["pytest>=8", "numpy", "ruff", "build", "twine"]
 
 [project.urls]
-Homepage = "https://github.com/hadilq/type-nn"
+Homepage = "https://github.com/hadilq/torch-type-nn"
+Repository = "https://github.com/hadilq/torch-type-nn"
+Issues = "https://github.com/hadilq/torch-type-nn/issues"
+Board = "https://github.com/hadilq/torch-type-nn/blob/main/BOARD.md"
+"C reference" = "https://github.com/hadilq/type-nn"
 "Design notes" = "https://hadilq.com/posts/train-the-knowledge/"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/torch_type_nn"]
 
+# The sdist carries what the test-suite needs (tests import benchmarks/*.py);
+# the datasets are not in it (git-ignored; fetch with benchmarks/fetch_data.py).
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml", "flake.nix"]
+include = ["src", "tests", "benchmarks", "docs", "README.md", "BOARD.md", "LICENSE",
+           "pyproject.toml", "flake.nix", "flake.lock"]
+exclude = ["benchmarks/data/*", "!benchmarks/data/README.md", "benchmarks/results/pre-audit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

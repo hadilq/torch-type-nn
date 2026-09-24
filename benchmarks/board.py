@@ -2,7 +2,7 @@
 
     python benchmarks/board.py [--board results/board-per-sample.jsonl]
                                [--scale results/scale-batch32.jsonl]
-                               [--reference reference/c-type-nn-7333bf7.jsonl]
+                               [--reference reference/c-type-nn-7333bf7-30seeds.jsonl]
                                [--write BOARD.md]
 
 Without ``--write`` the sections are printed. With it, each section replaces
@@ -171,6 +171,8 @@ def meta(rows):
 
 
 def sections(board, scale, reference):
+    if not Path(reference).exists():      # committed input: missing is an error, not "no data"
+        raise SystemExit(f"C reference {reference} not found")
     ref_rows, ref_found = read([reference])
     b_rows, b_found = read(board)
     rows = {**ref_rows, **b_rows}
@@ -212,7 +214,8 @@ def main(argv=None):
     ap.add_argument("--board", nargs="*",
                     default=[str(HERE / "results" / "board-per-sample.jsonl")])
     ap.add_argument("--scale", nargs="*", default=[str(HERE / "results" / "scale-batch32.jsonl")])
-    ap.add_argument("--reference", default=str(HERE / "reference" / "c-type-nn-7333bf7.jsonl"))
+    ap.add_argument("--reference",
+                    default=str(HERE / "reference" / "c-type-nn-7333bf7-30seeds.jsonl"))
     ap.add_argument("--write", metavar="BOARD.md")
     a = ap.parse_args(argv)
     secs = sections(a.board, a.scale, a.reference)

@@ -9,8 +9,8 @@ design is explained in
 > Status: alpha (0.1.0.dev0). Forward, gradients and the per-Or Adam step
 > agree with the C reference to 1e-12, and both C scaling rules have exact
 > ports on the board (see [Validation](#validation)). Deliberate differences
-> from C are listed in [docs/DIFFERENCES.md](docs/DIFFERENCES.md); the audit
-> that led to the current defaults is in [docs/AUDIT.md](docs/AUDIT.md).
+> from C are listed in [docs/DIFFERENCES.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/DIFFERENCES.md); the audit
+> that led to the current defaults is in [docs/AUDIT.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/AUDIT.md).
 
 ## Quick start
 
@@ -84,7 +84,7 @@ C blocks width there, which leaves a network born with depth ≤ 2 no width
 site while a depth probe exists; `TypeNNAdapter(model,
 width_through_depth_probe=False)` reproduces C.
 
-Both rules and both width rules are on [BOARD.md](BOARD.md), including exact
+Both rules and both width rules are on [BOARD.md](https://github.com/hadilq/torch-type-nn/blob/main/BOARD.md), including exact
 ports of the two C models.
 
 **Any architecture, any optimizer.** The scaler is written against a
@@ -93,7 +93,7 @@ small protocol (`torch_type_nn.protocol.Scalable`): the rule lives in
 its distance from it, remove it) comes from an adapter. `TypeNN` is wrapped
 in `TypeNNAdapter` automatically. `ScalableMLP` (`Linear`/ReLU stacks) is
 the second family: `MLPAdapter` grows and prunes its width and depth. See
-[docs/ADAPTERS.md](docs/ADAPTERS.md) for writing an adapter. Stock
+[docs/ADAPTERS.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/ADAPTERS.md) for writing an adapter. Stock
 `torch.optim` optimizers work too: structural edits are reported as `Edit`s
 with index maps, `follow_structure` remaps the optimizer state through them,
 and the scaler attaches `keep_invariants` so `a >= 1` holds after every step.
@@ -153,7 +153,7 @@ Two independent checks against [hadilq/type-nn](https://github.com/hadilq/type-n
   cell. `ref-type-nn` and `ref-type-nn-overfit` are exact configurations of
   C's two models; `benchmarks/board.py` compares each with the C board
   (`benchmarks/reference/`, deterministic, reproduced digit for digit) and
-  writes every table of [BOARD.md](BOARD.md) from the result files.
+  writes every table of [BOARD.md](https://github.com/hadilq/torch-type-nn/blob/main/BOARD.md) from the result files.
 
 ```sh
 nix run .#board-all      # every result on all cores, then BOARD.md's tables
@@ -177,7 +177,7 @@ nix run .#publish -- --repository testpypi   # upload (TestPyPI first)
 
 The benchmark datasets are pinned (URL + SRI hash) in
 `benchmarks/datasets.json` and never committed; see
-[benchmarks/data/README.md](benchmarks/data/README.md).
+[benchmarks/data/README.md](https://github.com/hadilq/torch-type-nn/blob/main/benchmarks/data/README.md).
 
 Without Nix: `pip install -e ".[dev]" && python benchmarks/fetch_data.py && pytest`.
 
@@ -234,6 +234,40 @@ for the driver in `/run/opengl-driver/lib`; the `target=source` form mounts the
 host's driver directory there inside the sandbox only (a trailing `?` marks a
 path that may be missing). With several GPUs add `/dev/nvidia1`, ... Check with
 `nix build .#cuda-tests -L`.
+
+## Publishing
+
+Releases go to PyPI from GitHub Actions with trusted publishing
+(`.github/workflows/publish.yml`): no API token is stored anywhere.
+
+One-time setup, on PyPI → *Your account* → *Publishing* → *Add a new pending
+publisher* → *GitHub*:
+
+| field | value |
+|---|---|
+| PyPI Project Name | `torch-type-nn` |
+| Owner | `hadilq` |
+| Repository name | `torch-type-nn` |
+| Workflow name | `publish.yml` |
+| Environment name | `pypi` |
+
+For TestPyPI, the same on test.pypi.org (a separate account) with environment
+`testpypi`. GitHub creates both environments on first use; add protection
+rules (e.g. required reviewers) under *Settings → Environments* if wanted.
+
+Release:
+
+```sh
+# 1. set the version in pyproject.toml (e.g. 0.1.0), commit, push
+# 2. rehearse: Actions → publish → Run workflow → testpypi
+# 3. release: the tag must equal the version
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow builds the sdist and wheel, runs the test-suite against the
+built wheel (CPU torch), and only then uploads. Locally, `nix run .#dist`
+builds and checks the same files; `nix run .#publish` uploads them with
+twine and a token.
 
 ## License
 

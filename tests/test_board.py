@@ -52,3 +52,8 @@ def test_write_refuses_a_board_without_the_markers(tmp_path):
     md.write_text("no markers\n")
     with pytest.raises(SystemExit):
         board.write(md, {"port": ["x"]})
+
+
+def test_a_missing_c_reference_is_an_error(tmp_path):
+    with pytest.raises(SystemExit, match="C reference"):
+        board.sections([], [], str(tmp_path / "missing.jsonl"))
