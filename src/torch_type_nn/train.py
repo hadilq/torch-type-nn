@@ -38,6 +38,7 @@ def fit(
     shuffle: bool | Callable[[int, int], torch.Tensor] = True,
     generator: torch.Generator | None = None,
     scale: bool = True,
+    rule: str = "threshold",
     loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = mse_loss,
     callback: Callable[[int, StructureScaler], None] | None = None,
 ) -> FitResult:
@@ -50,12 +51,14 @@ def fit(
         shuffle: ``True`` for a fresh permutation per epoch, ``False`` for
             none, or ``fn(epoch, n) -> LongTensor`` for a custom order.
         scale: ``False`` trains the structure as it is (a static network).
+        rule: the scaling rule, ``"threshold"`` (default) or ``"bic"``; see
+            :class:`~torch_type_nn.scaling.StructureScaler`.
         callback: called as ``callback(epoch, scaler)`` after each epoch.
     """
     n = X.shape[0]
     steps = math.ceil(n / batch_size)
     opt = TypeAdam(model, lr=lr)
-    scaler = StructureScaler(model, opt, epochs=epochs, steps_per_epoch=steps)
+    scaler = StructureScaler(model, opt, epochs=epochs, steps_per_epoch=steps, rule=rule)
     if scale:
         scaler.begin()
     model.train()

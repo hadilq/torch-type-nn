@@ -9,12 +9,13 @@ Addresses:
 * ``Item(DEPTH, (i,))``: layer ``i``; sites are gaps ``g`` (in front of layer
   ``g``), counted in the stack without the depth probe.
 
-With ``width_through_depth_probe=True`` a width probe may also sit on a
-junction that crosses the depth probe: the new unit passes through the probe
-layer on a carrier Or (w = e_k, b = 0, a = 1) and the real consumer beyond it
-reads it with weights of exactly 0. The C reference skips such junctions,
-which leaves a network born with depth <= 2 no width site while a depth probe
-exists (see docs/DIFFERENCES.md). The default keeps the reference behaviour.
+Width grows on *every* junction (``width_through_depth_probe=True``, the
+default): a width probe on a junction that crosses the depth probe passes
+through the probe layer on a carrier Or (w = e_k, b = 0, a = 1) and the real
+consumer beyond it reads it with weights of exactly 0. The C reference skips
+such junctions, which leaves a network born with depth <= 2 no width site
+while a depth probe exists (see docs/DIFFERENCES.md);
+``width_through_depth_probe=False`` reproduces it.
 
 The numerical content is ``type_nn_scale.c``: distances from the identity,
 exact ablations, affine folds for depth edits and the exact parameter count
@@ -178,7 +179,7 @@ def fold_apply(c: AndOr, alpha: torch.Tensor, beta: torch.Tensor) -> None:
 class TypeNNAdapter:
     """:class:`TypeNN` under the :class:`~torch_type_nn.protocol.Scalable` protocol."""
 
-    def __init__(self, model: TypeNN, *, width_through_depth_probe: bool = False) -> None:
+    def __init__(self, model: TypeNN, *, width_through_depth_probe: bool = True) -> None:
         self.model = model
         self.through = bool(width_through_depth_probe)
         self._sink: list | None = None
@@ -351,14 +352,23 @@ class TypeNNAdapter:
             P.add_or(kp, e, 0.0, 1.0, born=ctx.step)
         c.add_input()
 
-    @torch.no_grad()
-    def _drop_coordinate(self, i: int, k: int) -> None:
-        """Drop output coordinate k of layer i; the consumer keeps the mean of
-        what it contributed (b += w E[x_k])."""
-        p, c = self.layers[i], self._consumer(i)
+    def _input_means(self, i: int) -> torch.Tensor | None:
+        """E[x] of the consumer of junction i over the epoch (None without data)."""
+        c = self._consumer(i)
         ns = float(c.stat_ns)
-        if ns > 0:
-            c.bias += c.weight[..., k] * (c.stat_sx[k] / ns)
+        return (c.stat_sx / ns).clone() if ns > 0 else None
+
+    @torch.no_grad()
+    def _drop_coordinate(self, i: int, k: int, mean: float | None = None) -> None:
+        """Drop output coordinate k of layer i; the consumer keeps the mean of
+        what it contributed (b += w E[x_k]). ``mean`` is E[x_k] taken before
+        any other drop on the junction (a drop resets the consumer's statistics)."""
+        p, c = self.layers[i], self._consumer(i)
+        if mean is None:
+            means = self._input_means(i)
+            mean = None if means is None else means[k]
+        if mean is not None:
+            c.bias += c.weight[..., k] * mean
         if self._crosses_probe(i):
             P = self.layers[i + 1]
             P.drop_unit(k)
@@ -495,17 +505,22 @@ class TypeNNAdapter:
             n_in = n_out
         return total
 
-    def commit_removals(self, removed: Sequence[Item]) -> dict[str, int]:
-        """Remove what was ablated (an identity: exact), then clear the probe
-        flags of what stays."""
+    def commit_removals(self, removed: Sequence[Item],
+                        axes: Sequence[str] = (WIDTH, DEGREE)) -> dict[str, int]:
+        """Remove the chosen items, then clear the probe flags of what stays, on
+        the given axes only. Under the BIC rule the items were ablated (an
+        identity: exact); under the threshold rule they sit inside the band."""
         units, ors = self._gone(removed)
         c = {"or_add": 0, "or_drop": 0, "and_add": 0, "and_drop": 0}
         layers = self.layers
+        do_width, do_degree = WIDTH in axes, DEGREE in axes
+        means = {i: self._input_means(i) for i in range(len(layers) - 1)
+                 if any(a[0] == i for a in units)}
         for i in reversed(range(len(layers))):
             l = layers[i]
             for k in reversed(range(l.out_features)):
                 gone = (i, k) in units
-                for r in reversed(range(l.degree)):
+                for r in reversed(range(l.degree if do_degree else 0)):
                     if not bool(l.mask[k, r]):
                         continue
                     was_probe = bool(l.or_probe[k, r])
@@ -516,10 +531,11 @@ class TypeNNAdapter:
                     elif was_probe and not gone:
                         l.or_probe[k, r] = False
                         c["and_add"] += 1
-                if i + 1 < len(layers):
+                if do_width and i + 1 < len(layers):
                     was_probe = bool(l.unit_probe[k])
                     if gone:
-                        self._drop_coordinate(i, k)
+                        m = means.get(i)
+                        self._drop_coordinate(i, k, None if m is None else m[k])
                         if not was_probe:
                             c["or_drop"] += 1
                     elif was_probe:

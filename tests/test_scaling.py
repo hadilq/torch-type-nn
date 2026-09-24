@@ -10,10 +10,11 @@ from torch_type_nn.adapters.typenn import dev_column, dev_layer, dev_or
 from torch_type_nn.scaling import DONE, FIT, GROW, PRUNE, phase_at
 
 
-def make(n, m, seed, lr, n_train, epochs, batch=1):
+def make(n, m, seed, lr, n_train, epochs, batch=1, rule="threshold"):
     net = TypeNN(n, m, seed=seed, dtype=D)
     opt = TypeAdam(net, lr=lr)
-    sc = StructureScaler(net, opt, epochs=epochs, steps_per_epoch=math.ceil(n_train / batch))
+    sc = StructureScaler(net, opt, epochs=epochs, steps_per_epoch=math.ceil(n_train / batch),
+                         rule=rule)
     return net, opt, sc
 
 
@@ -77,7 +78,7 @@ def test_schedule_and_threshold():
 
 
 def test_evidence_formulas():
-    _, _, sc = make(2, 1, 1, 0.0, 100, 1)
+    _, _, sc = make(2, 1, 1, 0.0, 100, 1, rule="bic")
     sc.n_train = 100
     n = 100.0
     assert sc.bic_ratio(0.1, 0.1, 5) == 0.0
@@ -89,7 +90,7 @@ def test_evidence_formulas():
 
 def test_measured_mse_is_the_mse_of_the_epoch():
     X, Y = data(3, 30, 21, scale=1.0)
-    net, opt, sc = make(3, 2, 4, 0.0, 30, 10)
+    net, opt, sc = make(3, 2, 4, 0.0, 30, 10, rule="bic")
     sc.begin()
     run_epoch(net, opt, sc, X, Y)
     with torch.no_grad():
@@ -108,9 +109,10 @@ def test_residual_gate():
 
 
 def test_prune_never_makes_the_model_worse():
+    """BIC rule: a prune boundary never raises the criterion above max(before, best)."""
     X, Y = data(4, 60, 8)
     E = 60
-    net, opt, sc = make(4, 2, 12, 0.005, 60, E)
+    net, opt, sc = make(4, 2, 12, 0.005, 60, E, rule="bic")
     sc.begin()
 
     def crit():
@@ -247,8 +249,11 @@ def test_prune_boundary_respects_the_exact_criterion():
     for key, v in fx["stats"].items():
         i, name = key.split(".", 1)
         getattr(net.layers[int(i)], name).copy_(v)
+    from torch_type_nn.adapters import TypeNNAdapter
+
     opt = TypeAdam(net, lr=fx["lr"])
-    sc = StructureScaler(net, opt, epochs=1, steps_per_epoch=1)
+    sc = StructureScaler(TypeNNAdapter(net, width_through_depth_probe=False), opt,
+                         epochs=1, steps_per_epoch=1, rule="bic")
     sc.step, sc.total, sc.crit_best = fx["step"], fx["total"], fx["crit_best"]
     sc._ep.x, sc._ep.t, sc._ep.n = [fx["X"]], [fx["T"]], fx["X"].shape[0]
     before_mse = sc.measure_mse()
@@ -268,7 +273,7 @@ def _check_prunable_structure(net):
 
 
 def test_width_through_depth_probe():
-    """Opt-in: a width probe crossing the depth probe (carried on a carrier
+    """Default: a width probe crossing the depth probe (carried on a carrier
     Or) is exact; ablation undoes exactly; dropping it restores the shapes."""
     from torch_type_nn.adapters import TypeNNAdapter
     from torch_type_nn.protocol import DEPTH, WIDTH, EditContext
@@ -278,8 +283,8 @@ def test_width_through_depth_probe():
 
     net = TypeNN(10, 1, seed=3, dtype=D)          # birth depth 2: the blocked case
     assert net.depth == 2
-    ref_adapter = TypeNNAdapter(net)
-    a = TypeNNAdapter(net, width_through_depth_probe=True)
+    ref_adapter = TypeNNAdapter(net, width_through_depth_probe=False)
+    a = TypeNNAdapter(net)
     X = torch.randn(50, 10, dtype=D)
     a.add_probe(DEPTH, 1, ctx())                 # 10 -> 1 -> [probe 1x1] -> 1
     with torch.no_grad():                        # (a depth probe is an identity only
@@ -317,7 +322,7 @@ def test_width_through_depth_probe_trains_and_grows():
     net = TypeNN(10, 1, seed=3, dtype=D)
     opt = TypeAdam(net, lr=0.003)
     E, B = 30, 16
-    sc = StructureScaler(TypeNNAdapter(net, width_through_depth_probe=True), opt,
+    sc = StructureScaler(TypeNNAdapter(net), opt,
                          epochs=E, steps_per_epoch=math.ceil(200 / B))
     sc.begin()
     for _ in range(E):

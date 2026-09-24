@@ -1,29 +1,47 @@
 """The three scaling problems of type-nn: width (Or), degree (And), depth.
 
-A port of ``type_nn_scale.c`` from https://github.com/hadilq/type-nn, written
-against the :class:`~torch_type_nn.protocol.Scalable` protocol: this module
-holds only the rule (thresholds, evidence, schedule, the greedy prune pool);
-what an item *is* comes from an adapter. :class:`TypeNN` models are wrapped in
+This module holds only the rule (thresholds, schedule, pruning); what an item
+*is* comes from an adapter (:class:`~torch_type_nn.protocol.Scalable`).
+:class:`TypeNN` models are wrapped in
 :class:`~torch_type_nn.adapters.typenn.TypeNNAdapter` automatically.
 
 One dummy rule for all three axes. A *probe* is an identity, and back-prop
-is free to move it. A probe that back-prop moved out of the identity
-(displacement above ``theta(T) = lr * T^(3/4)``) *and* that pays the
-Bayesian-information price of its parameters,
+is free to move it:
 
-    n ln(MSE_without / MSE_with) > k ln n,
+* width (Or): the previous layer grows a trained output unit that the current
+  layer reads with weights born at exactly 0;
+* degree (And): every And carries one noisy identity Or (``w ~ 0, b ~ 1``);
+* depth: one identity layer sits in the gap (between *any* two layers) with
+  the largest mean ``|dL/dx|``.
 
-is promoted, and a fresh probe takes its place. Late in training every Or
-and every coordinate is a candidate for removal; they are ablated in order
-of the damage each does alone, and the ablated set keeps growing while the
-criterion ``C = n ln MSE + K ln n`` stays at or below its best value seen
-while pruning. ``MSE_without`` is measured: the item is reset to its
-identity and the epoch's training pairs are re-evaluated.
+A probe that back-prop moved out of the identity by more than
+``theta(T) = lr * T^(3/4)`` (``T`` its age in optimizer steps) is promoted,
+and a fresh probe takes its place. Schedule on ``u = step / total``: grow on
+``u < 1/3`` (only while the epoch's training MSE exceeds ``Var(t) / N``),
+fit on the middle third, prune on ``u >= 2/3``.
 
-Schedule on ``u = step / total``: grow on ``u < 1/3`` (only while the
-epoch's training MSE exceeds ``Var(t) / N``), fit on the middle third,
-prune on ``u >= 2/3``. All edits happen at epoch boundaries and read only
-training data seen in the epoch.
+Two rules decide what is dropped late, and whether a moved probe is kept:
+
+``rule="threshold"`` (default; the type-nn architecture, and C's
+``type-nn-overfit``)
+    Everything is read from what back-prop did to the weights. A probe is
+    promoted on displacement alone. In the prune phase every coordinate, Or
+    and layer that sits inside the identity band
+    ``theta_band = lr * S^(3/4)`` (``S`` optimizer steps per epoch, the
+    window between two decisions) is dropped: an And keeps its most-moved Or
+    (so of two identity Ors one is dropped), a junction keeps its most-moved
+    coordinate, and at most one (near-)identity layer goes per boundary.
+
+``rule="bic"`` (C's ``type-nn``)
+    Adds the Bayesian-information prior. A moved probe is promoted only if it
+    also pays ``n ln(MSE_without / MSE_with) > k ln n``, where
+    ``MSE_without`` is *measured* by resetting the item to its identity and
+    re-running the epoch's training pairs (forward passes, so the scaler keeps
+    one epoch of pairs). Pruning ablates items greedily while
+    ``C = n ln MSE + K ln n`` stays at or below its best value seen while
+    pruning.
+
+All edits happen at epoch boundaries and read only training data.
 
 Usage::
 
@@ -57,12 +75,14 @@ import torch
 from torch import nn
 
 from .edits import follow_structure
+from .optim import keep_invariants
 from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable
 
-__all__ = ["StructureScaler", "Counters", "phase_at", "as_scalable",
+__all__ = ["StructureScaler", "Counters", "phase_at", "as_scalable", "RULES",
            "GROW", "FIT", "PRUNE", "DONE"]
 
 GROW, FIT, PRUNE, DONE = 0, 1, 2, 3
+RULES = ("threshold", "bic")
 
 
 def phase_at(u: float) -> int:
@@ -134,16 +154,23 @@ class StructureScaler:
             ``lr`` of the displacement threshold and of the probe noise.
         epochs, steps_per_epoch: the schedule, ``total = epochs * steps_per_epoch``
             optimizer steps.
-        eval_batch: chunk size when the epoch's pairs are re-evaluated.
+        rule: ``"threshold"`` (default: decisions from back-prop displacement
+            only) or ``"bic"`` (adds the measured BIC prior); see the module docs.
+        eval_batch: chunk size when the epoch's pairs are re-evaluated (``bic``).
         generator: RNG for probe initialisation; default ``model.generator``.
     """
 
     def __init__(self, model, optimizer: torch.optim.Optimizer, *, epochs: int,
-                 steps_per_epoch: int, eval_batch: int = 65536,
+                 steps_per_epoch: int, rule: str = "threshold", eval_batch: int = 65536,
                  generator: torch.Generator | None = None) -> None:
+        if rule not in RULES:
+            raise ValueError(f"rule must be one of {RULES}, not {rule!r}")
+        self.rule = rule
+        self.steps_per_epoch = int(steps_per_epoch)
         self.target: Scalable = as_scalable(model)
         self.model: nn.Module = self.target.model
         self.optimizer = optimizer
+        keep_invariants(optimizer, self.model)      # a >= 1 with any optimizer
         self.total = int(epochs) * int(steps_per_epoch)
         self.step = 0
         self.phase = GROW
@@ -156,6 +183,7 @@ class StructureScaler:
         self._gen = generator
         self._n_out = getattr(self.model, "out_features", None)
         self._ep = _Epoch()
+        self._closed = False      # the pairs in _ep belong to an epoch already closed
         self._cache: tuple[torch.Tensor, torch.Tensor] | None = None
 
     # ----------------------------------------------------------------- public
@@ -184,13 +212,16 @@ class StructureScaler:
     @torch.no_grad()
     def observe(self, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor) -> None:
         """Record one optimizer step: the inputs, the (pre-update) outputs, the targets."""
+        if self._closed:
+            self._new_epoch()
         m = y.shape[-1]
         self._n_out = m
         y = y.detach().reshape(-1, m)
         t = t.detach().reshape(-1, m).to(y.dtype)
         ep = self._ep
-        ep.x.append(x.detach())
-        ep.t.append(t)
+        if self.rule == "bic":        # only the evidence rule re-reads the pairs
+            ep.x.append(x.detach())
+            ep.t.append(t)
         ep.n += t.shape[0]
         ep.loss_sum += float(((y - t) ** 2).mean(1).sum())
         ep.t_sum = t.sum(0) if ep.t_sum is None else ep.t_sum + t.sum(0)
@@ -204,12 +235,15 @@ class StructureScaler:
         ph = phase_at(u)
         if self.phase == DONE:
             return
+        if self._closed:                      # no step since the last boundary
+            self._new_epoch()
         self._close_epoch_residual()
+        bic = self.rule == "bic"
         with self._editing():
             if ph == GROW and self.residual_unexplained():
                 # depth first: it reads the junction statistics other edits reset
-                self._grow_depth(self.measure_mse())
-                base = self.measure_mse()
+                self._grow_depth(self.measure_mse() if bic else 0.0)
+                base = self.measure_mse() if bic else 0.0
                 self._grow_axis(WIDTH, base)
                 self._grow_axis(DEGREE, base)
             elif ph == PRUNE:
@@ -218,9 +252,13 @@ class StructureScaler:
         self._reset_epoch()
 
     def end(self) -> None:
-        """End of training: the last prune boundary; no probe survives."""
+        """End of training: the last prune boundary; no probe survives.
+
+        If training stopped before the prune phase, this boundary judges the
+        model on the last epoch's pairs (kept until the next step), never on
+        a stale loss."""
         with self._editing():
-            if self.phase != PRUNE:
+            if self.phase not in (PRUNE, DONE):
                 self._prune_step()
             self.phase = DONE
             self.target.set_tracking(False)
@@ -236,6 +274,11 @@ class StructureScaler:
     def threshold(self, age: int) -> float:
         """theta(T) = lr T^(3/4): the geometric mean of noise lr sqrt(T) and drift lr T."""
         return self.lr * float(max(age, 1)) ** 0.75
+
+    def band(self) -> float:
+        """theta_band = lr S^(3/4), S optimizer steps per epoch: the identity band
+        of the threshold rule (C: ``lr N^(3/4)`` with N samples, one step each)."""
+        return self.lr * float(max(self.steps_per_epoch, 1)) ** 0.75
 
     def residual_unexplained(self) -> bool:
         """Grow only while the epoch's training MSE exceeds Var(t) / N."""
@@ -295,10 +338,11 @@ class StructureScaler:
         return self.bic_ratio(base, without, self.target.cost(item))
 
     def _passes(self, base: float, item: Item) -> bool:
-        """Moved out of the identity, and pays for its parameters."""
+        """Moved out of the identity (and, under ``bic``, pays for its parameters)."""
         age = self.step - self.target.born(item)
-        return (self.target.displacement(item) > self.threshold(age)
-                and self.evidence(base, item) > 1.0)
+        if not self.target.displacement(item) > self.threshold(age):
+            return False
+        return self.rule != "bic" or self.evidence(base, item) > 1.0
 
     # ------------------------------------------------------------------- grow
 
@@ -381,6 +425,48 @@ class StructureScaler:
         self.counters.update(tgt.commit_removals(removed))
 
     def _prune_step(self) -> None:
+        if self.rule == "bic":
+            self._prune_step_bic()
+        else:
+            self._prune_band()
+
+    def _prune_band(self) -> None:
+        """One prune boundary of the threshold rule: drop what sat back inside the
+        identity band. Depth first (the probe, else one live layer), then width,
+        then degree, each judged on the structure the previous axis left."""
+        th = self.band()
+        tgt = self.target
+        p = tgt.probe_at(DEPTH)
+        edited = False
+        if p is not None:
+            if tgt.displacement(p) <= th:
+                tgt.remove_probe(p)            # never live: a retirement, not a drop
+                edited = True
+            else:
+                tgt.promote(p)
+                self.counters.add(DEPTH)
+        if not edited:                         # at most one layer edit per boundary
+            layers = [(tgt.displacement(it), j, it)
+                      for j, it in enumerate(tgt.removal_order(DEPTH))]
+            for _, _, it in sorted((c for c in layers if c[0] <= th), key=lambda c: c[:2]):
+                trial = tgt.trial_remove(it)
+                if trial is not None:
+                    trial.commit()
+                    self.counters.drop(DEPTH)
+                    break
+        for axis in (WIDTH, DEGREE):
+            items = [it for it in tgt.prune_candidates() if it.axis == axis]
+            devs = [(tgt.displacement(it), j, it) for j, it in enumerate(items)]
+            # ascending distance; on a tie the later candidate goes first, so each
+            # group keeps its most-moved item (the first one on a tie), as in C
+            in_band = sorted((c for c in devs if c[0] <= th), key=lambda c: (c[0], -c[1]))
+            removed: list[Item] = []
+            for _, _, it in in_band:
+                if tgt.can_remove(it, removed):
+                    removed.append(it)
+            self.counters.update(tgt.commit_removals(removed, axes=(axis,)))
+
+    def _prune_step_bic(self) -> None:
         """One prune boundary. The reference is the best criterion seen while
         pruning, so a smaller model is accepted only if it is at least as good
         a model as the best one so far."""
@@ -407,9 +493,15 @@ class StructureScaler:
             self.n_train = n
 
     def _reset_epoch(self) -> None:
+        # Statistics are consumed by the edits of this boundary; the pairs stay
+        # until the next step so that ``end`` can still measure on them.
         self.target.reset_stats()
+        self._closed = True
+
+    def _new_epoch(self) -> None:
         self._ep = _Epoch()
         self._cache = None
+        self._closed = False
 
 
 class _EditScope:

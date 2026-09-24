@@ -103,8 +103,8 @@ def test_keep_one_unit_per_junction():
     assert not a.can_remove(Item(WIDTH, (0, 1)), [first])
 
 
-def train(net, opt, X, Y, E, B=8):
-    sc = StructureScaler(net, opt, epochs=E, steps_per_epoch=math.ceil(len(X) / B))
+def train(net, opt, X, Y, E, B=8, rule="bic"):
+    sc = StructureScaler(net, opt, epochs=E, steps_per_epoch=math.ceil(len(X) / B), rule=rule)
     sc.begin()
     checks = []
     for _ in range(E):
@@ -124,7 +124,7 @@ def train(net, opt, X, Y, E, B=8):
             with sc._editing():          # the edit scope syncs the optimizer
                 sc._prune_step()
             after = sc.criterion(sc.measure_mse(), net.num_params())
-            checks.append(after <= ref + 1e-9 * abs(ref))
+            checks.append(rule != "bic" or after <= ref + 1e-9 * abs(ref))
             sc.phase = PRUNE
             sc._reset_epoch()
         else:
@@ -160,3 +160,18 @@ def test_checkpoint_roundtrip():
     other.load_state_dict(net.state_dict())
     with torch.no_grad():
         assert torch.equal(other(X), net(X))
+
+
+def test_threshold_rule_on_an_mlp():
+    """The default rule grows and prunes an MLP from displacement alone."""
+    X, Y = data(128)
+    net = ScalableMLP(4, 2, dtype=D, seed=1)
+    opt = torch.optim.Adam(net.parameters(), lr=0.01)
+    sc, _ = train(net, opt, X, Y, E=60, rule="threshold")
+    assert sc.counters.or_add > 0, "width grew"
+    assert not any(bool(l.unit_probe.any()) or l.probe for l in net.linears)
+    ws = [l.weight.shape for l in net.linears]
+    assert all(ws[i][0] == ws[i + 1][1] for i in range(len(ws) - 1))
+    with torch.no_grad():
+        acc = float((net(X).argmax(1) == Y.argmax(1)).double().mean())
+    assert acc > 0.8

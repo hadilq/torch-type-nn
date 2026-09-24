@@ -178,14 +178,21 @@ class MLPAdapter:
         e[k] = 1.0
         P.add_out(e, 0.0)
 
-    @torch.no_grad()
-    def _drop_coordinate(self, i: int, k: int) -> None:
-        """Drop hidden unit k of linear i; linear i+1 keeps the mean of what it
-        read (b += w E[a_k])."""
-        p, c = self.L[i], self._consumer(i)
+    def _input_means(self, i: int) -> torch.Tensor | None:
+        c = self._consumer(i)
         ns = float(c.stat_ns)
-        if ns > 0:
-            c.bias += c.weight[:, k] * (c.stat_sx[k] / ns)
+        return (c.stat_sx / ns).clone() if ns > 0 else None
+
+    @torch.no_grad()
+    def _drop_coordinate(self, i: int, k: int, mean: float | None = None) -> None:
+        """Drop hidden unit k of linear i; the consumer keeps the mean of what it
+        read (b += w E[a_k]), with E[a_k] taken before any drop on the junction."""
+        p, c = self.L[i], self._consumer(i)
+        if mean is None:
+            means = self._input_means(i)
+            mean = None if means is None else means[k]
+        if mean is not None:
+            c.bias += c.weight[:, k] * mean
         if self.L[i + 1].probe:
             self.L[i + 1].drop_in(k)
             self.L[i + 1].drop_out(k)
@@ -291,9 +298,13 @@ class MLPAdapter:
             n_in = n_out
         return total
 
-    def commit_removals(self, removed: Sequence[Item]) -> dict[str, int]:
+    def commit_removals(self, removed: Sequence[Item],
+                        axes: Sequence[str] = (WIDTH,)) -> dict[str, int]:
         units = {it.address for it in removed}
         c = {"or_add": 0, "or_drop": 0}
+        if WIDTH not in axes:
+            return c
+        means = {i: self._input_means(i) for i in {a[0] for a in units}}
         for i in reversed(range(len(self.L) - 1)):
             lin = self.L[i]
             if lin.probe:
@@ -301,7 +312,8 @@ class MLPAdapter:
             for k in reversed(range(lin.out_features)):
                 was_probe = bool(lin.unit_probe[k])
                 if (i, k) in units:
-                    self._drop_coordinate(i, k)
+                    m = means.get(i)
+                    self._drop_coordinate(i, k, None if m is None else m[k])
                     if not was_probe:
                         c["or_drop"] += 1
                 elif was_probe:

@@ -20,7 +20,27 @@ from torch import nn
 
 from .layer import AndOr
 
-__all__ = ["TypeAdam"]
+__all__ = ["TypeAdam", "keep_invariants"]
+
+
+def keep_invariants(optimizer: torch.optim.Optimizer, module: nn.Module):
+    """Make a stock optimizer respect the architecture: after every
+    ``optimizer.step()`` each :class:`AndOr` in ``module`` is projected back to
+    ``a >= 1`` with its free slots the identity Or (``AndOr.project_``).
+    :class:`TypeAdam` does this itself. Returns the hook handle; calling it
+    twice on one optimizer attaches one hook.
+    """
+    if isinstance(optimizer, TypeAdam) or getattr(optimizer, "_tnn_projects", None) is module:
+        return None
+
+    def project(opt, args, kwargs):
+        for layer in module.modules():
+            if isinstance(layer, AndOr):
+                layer.project_()
+
+    handle = optimizer.register_step_post_hook(project)
+    optimizer._tnn_projects = module
+    return handle
 
 
 class TypeAdam(torch.optim.Optimizer):

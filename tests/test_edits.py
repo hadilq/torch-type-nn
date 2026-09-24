@@ -143,6 +143,8 @@ def test_scaling_with_a_stock_optimizer():
     sc.end()
     c = sc.counters
     assert c.and_add + c.or_add + c.layer_add > 0
+    for l in net.layers:                   # the architecture's a >= 1, with stock Adam
+        assert bool((l.assembly >= 1).all()) and bool((l.bias[~l.mask] == 1).all())
     with torch.no_grad():
         final = float(((net(X) - Y) ** 2).mean())
     assert final < first

@@ -1,6 +1,5 @@
 import math
 
-import pytest
 import torch
 from helpers import D, assert_ulps, rich_layer
 
@@ -93,8 +92,10 @@ def test_input_statistics():
     assert int(l.stat_ns) == 0 and float(l.stat_gin) == 0
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA device")
 def test_cuda():
+    from conftest import cuda_or_skip
+
+    cuda_or_skip()
     l = rich_layer(3, 2, 2, torch.Generator().manual_seed(0)).cuda()
     l.add_or(0)
     l.add_input()

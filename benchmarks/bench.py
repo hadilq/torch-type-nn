@@ -8,9 +8,20 @@ initialisation seeds per cell. What differs is the initialisation RNG
 (torch's generator instead of xorshift32), so single runs are not
 bit-identical to C; the board compares means over seeds.
 
-    python benchmarks/bench.py [task|all] [type-nn|mlp|all] [--seeds 5] [--batch-size 1]
+Models (``MODELS``; every one goes through the same ``train`` loop):
 
-Prints one JSON line per (task, model), like ``./bench``.
+    type-nn              the architecture: threshold rule, width on every junction
+    type-nn-bic          the same with the BIC prior (rule="bic")
+    ref-type-nn          C's type-nn exactly: rule="bic", width_through_depth_probe=False
+    ref-type-nn-overfit  C's type-nn-overfit exactly: threshold rule, no width through the probe
+    mlp                  the c-mlp baseline: Linear-ReLU-Linear, 8 or 16 hidden units
+    mlp-scaled           ScalableMLP grown and pruned by the default (threshold) rule
+
+    python benchmarks/bench.py [task|all] [model|all] [--seeds 5] [--batch-size 1] [--device cuda]
+
+Data: ``$TORCH_TYPE_NN_DATA`` (set by ``nix develop`` / ``nix run .#bench``),
+else ``benchmarks/data`` (filled by ``nix develop`` or
+``python benchmarks/fetch_data.py``). Prints one JSON line per (task, model).
 """
 
 from __future__ import annotations
@@ -18,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -39,7 +51,7 @@ from torch_type_nn import (
 SPLIT_SEED = 34972
 LR_SCALE = 0.1
 MASK = 0xFFFFFFFF
-DATA = Path(__file__).parent / "data"
+DATA = Path(os.environ.get("TORCH_TYPE_NN_DATA") or Path(__file__).parent / "data")
 TASKS = {  # name: (file, epochs, lr)
     "xor": (None, 2000, 0.08),
     "iris": ("iris.data", 250, 0.05),
@@ -72,9 +84,19 @@ def one_hot(k: int, n: int) -> list[float]:
     return [1.0 if i == k else 0.0 for i in range(n)]
 
 
+def data_file(name: str) -> Path:
+    path = DATA / name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Enter `nix develop` (it copies the pinned datasets to "
+            "benchmarks/data), run `python benchmarks/fetch_data.py`, or set "
+            "TORCH_TYPE_NN_DATA to a directory holding them.")
+    return path
+
+
 def load(task: str):
     """Rows (X, Y) and whether the task is classification; parsing as dataset.c."""
-    path = DATA / TASKS[task][0]
+    path = data_file(TASKS[task][0])
     X, Y = [], []
     lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
     if task == "iris":
@@ -151,27 +173,42 @@ class MLP(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
-def train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device):
-    n = Xtr.shape[0]
-    steps = math.ceil(n / batch)
-    if kind in ("type-nn", "type-nn-through"):
+# kind: (family, scaling rule, width through the depth probe)
+MODELS = {
+    "type-nn": ("type-nn", "threshold", True),
+    "type-nn-bic": ("type-nn", "bic", True),
+    "ref-type-nn": ("type-nn", "bic", False),
+    "ref-type-nn-overfit": ("type-nn", "threshold", False),
+    "mlp": ("mlp", None, None),
+    "mlp-scaled": ("mlp-scaled", "threshold", True),
+}
+
+
+def build(kind, n_in, n_out, seed, lr, steps, epochs, device):
+    """Model, optimizer and (for scaled models) the started scaler."""
+    family, rule, through = MODELS[kind]
+    if family == "type-nn":
         model = TypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
         opt = TypeAdam(model, lr=lr * LR_SCALE)
-        target = (TypeNNAdapter(model, width_through_depth_probe=True)
-                  if kind == "type-nn-through" else model)
-        scaler = StructureScaler(target, opt, epochs=epochs, steps_per_epoch=steps)
-        scaler.begin()
-    elif kind == "mlp-scaled":
-        # starts at one hidden layer of max(2, m) units; width and depth are
-        # grown and pruned by the same rule, the optimizer is stock Adam
+        target = TypeNNAdapter(model, width_through_depth_probe=through)
+    elif family == "mlp-scaled":
+        # born with one hidden layer of max(2, m) units; stock Adam
         model = ScalableMLP(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr * LR_SCALE)
-        scaler = StructureScaler(model, opt, epochs=epochs, steps_per_epoch=steps)
-        scaler.begin()
+        target = model
     else:
         model = MLP(n_in, n_out, seed).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr * LR_SCALE)
-        scaler = None
+        return model, opt, None
+    scaler = StructureScaler(target, opt, epochs=epochs, steps_per_epoch=steps, rule=rule)
+    scaler.begin()
+    return model, opt, scaler
+
+
+def train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device):
+    n = Xtr.shape[0]
+    steps = math.ceil(n / batch)
+    model, opt, scaler = build(kind, n_in, n_out, seed, lr, steps, epochs, device)
     model.train()
     for ep in range(epochs):
         order = list(range(n))
@@ -256,8 +293,7 @@ def cell(task, kind, seeds, batch, device, verbose):
             rec["layers"].append(model.depth)
             for k, v in vars(scaler.counters).items():
                 rec[k].append(v)
-            if kind == "mlp-scaled":
-                rec.setdefault("hidden", []).append(model.structure())
+            rec.setdefault("structure", []).append(model.structure())
         else:
             rec["layers"].append(2)
         if verbose:
@@ -276,17 +312,17 @@ def cell(task, kind, seeds, batch, device, verbose):
         v = [x for x in v if x is not None]
         return statistics.stdev(v) if len(v) > 1 else 0.0
 
-    impl = {"type-nn": "torch-type-nn", "type-nn-through": "torch-type-nn-through",
-            "mlp-scaled": "torch-mlp-scaled"}.get(kind, "torch-mlp")
-    out = {"impl": impl, "task": task,
+    family, rule, through = MODELS[kind]
+    out = {"impl": f"torch-{kind}", "task": task, "rule": rule,
+           "width_through_depth_probe": through, "device": str(device),
            "seeds": seeds, "epochs": epochs, "lr": lr, "batch_size": batch,
            "hold_mse": mean(rec["hold_mse"]), "hold_mse_sd": sd(rec["hold_mse"]),
            "hold_acc": mean(rec["hold_acc"]), "hold_acc_sd": sd(rec["hold_acc"]),
            "mse": mean(rec["mse"]), "acc": mean(rec["acc"]),
            "params": mean(rec["params"]), "params_sd": sd(rec["params"]),
            "train_s": mean(rec["train_s"]), "us_per_infer": us,
-           "init_layers": TypeNN(n_in, n_out).birth_depth if kind.startswith("type-nn") else 2,
-           "hidden": rec.get("hidden"),
+           "init_layers": TypeNN(n_in, n_out).birth_depth if family == "type-nn" else 2,
+           "structure": rec.get("structure"),
            "layers": mean(rec["layers"])}
     for k in ("or_add", "or_drop", "and_add", "and_drop", "layer_add", "layer_drop"):
         out[k] = mean(rec[k]) if rec[k] else 0.0
@@ -297,7 +333,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("task", nargs="?", default="all", choices=["all", *TASKS])
     ap.add_argument("model", nargs="?", default="all",
-                    choices=["all", "type-nn", "type-nn-through", "mlp", "mlp-scaled"])
+                    help="all, or a comma-separated list of: " + ", ".join(MODELS))
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--device", default="cpu")
@@ -306,7 +342,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     torch.set_num_threads(a.threads)
     tasks = list(TASKS) if a.task == "all" else [a.task]
-    kinds = ["type-nn", "mlp", "mlp-scaled"] if a.model == "all" else [a.model]
+    kinds = list(MODELS) if a.model == "all" else a.model.split(",")
+    unknown = [k for k in kinds if k not in MODELS]
+    if unknown:
+        ap.error(f"unknown model(s) {unknown}; choose from {list(MODELS)}")
     for task in tasks:
         for kind in kinds:
             print(json.dumps(cell(task, kind, a.seeds, a.batch_size, a.device, a.verbose)),

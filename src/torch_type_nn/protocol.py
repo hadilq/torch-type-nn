@@ -2,8 +2,10 @@
 
 type-nn's scaling rule is architecture-agnostic: on each axis a *probe* is
 an exact identity that back-prop may move; a probe that moved past
-``theta(T)`` and pays its BIC price is promoted; late in training items are
-ablated to their identity and removed while the model criterion allows.
+``theta(T)`` is promoted (under ``rule="bic"``: and pays its BIC price); late
+in training items back inside the identity band are removed (under
+``rule="bic"``: items are ablated and removed while the model criterion
+allows).
 What is specific to an architecture is only *what* an item is: how to
 insert an identity, how far an item is from it, how to reset it and how to
 remove it. That is this protocol.
@@ -139,6 +141,8 @@ class Scalable(Protocol):
     def params_without(self, removed: Sequence[Item]) -> int:
         """Exact parameter count of the model with ``removed`` taken out."""
 
-    def commit_removals(self, removed: Sequence[Item]) -> dict[str, int]:
-        """Remove the ablated set for real and clear every surviving probe flag.
+    def commit_removals(self, removed: Sequence[Item],
+                        axes: Sequence[str] = (WIDTH, DEGREE)) -> dict[str, int]:
+        """Remove ``removed`` for real and clear the surviving probe flags, on the
+        given ``axes`` only (the threshold rule commits width, then degree).
         Returns counter increments (``or_drop``, ``and_add``, ...)."""
