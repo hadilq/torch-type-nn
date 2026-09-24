@@ -1,0 +1,26 @@
+{
+  "comment": "Pinned benchmark datasets: the single source of truth for flake.nix (fetchurl) and fetch_data.py. hash is the SRI sha256 of the exact bytes. The five UCI/NCSU files and their hashes are those of the type-nn reference flake. digits: scikit-learn 1.5.2's copy of UCI optical digits. friedman: Friedman #1 (Friedman 1991; Breiman 1996) as distributed by Delve / OpenML 564 'fried' via PMLB (Git LFS; the hash is the LFS object id).",
+  "datasets": [
+    {"file": "iris.data", "task": "iris",
+     "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data",
+     "hash": "sha256-b2CLcacxchYxm00ntNm8hOar1zTtp4crcaRYVp4mVsA="},
+    {"file": "wine.data", "task": "wine",
+     "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/wine/wine.data",
+     "hash": "sha256-a+axID89Ud8LVTpw5XuKcjzUBWg5WCBPltI9fNauplk="},
+    {"file": "wdbc.data", "task": "wdbc",
+     "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data",
+     "hash": "sha256-1gavQR8+W+ijF6WotlK0Jarw/zjKaD1TJ///lMNpX0o="},
+    {"file": "diabetes.tab.txt", "task": "diabetes",
+     "url": "https://www4.stat.ncsu.edu/~boos/var.select/diabetes.tab.txt",
+     "hash": "sha256-RzP+vuaXhiwiE5zayHR4owDODRAVk96wftbA8zKKmc0="},
+    {"file": "ionosphere.data", "task": "ionosphere",
+     "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/ionosphere/ionosphere.data",
+     "hash": "sha256-RtUhhrhOIL5SkYrbk+j7mSazR5X/dQTCQ1CuBhagS70="},
+    {"file": "digits.csv.gz", "task": "digits",
+     "url": "https://raw.githubusercontent.com/scikit-learn/scikit-learn/1.5.2/sklearn/datasets/data/digits.csv.gz",
+     "hash": "sha256-CfZubeve4s0rWuWeDWq7tz/CsOAYXS4ZV+nrtR4jqiI="},
+    {"file": "564_fried.tsv.gz", "task": "friedman",
+     "url": "https://media.githubusercontent.com/media/EpistasisLab/pmlb/7c1f4bdc00136dc2e55c87fa6b8ba6e8af6d1a68/datasets/564_fried/564_fried.tsv.gz",
+     "hash": "sha256-9ku0ptIUpZpQtwsPMnDjNHJbbMAQRDpITMdRtZWkb+k="}
+  ]
+}

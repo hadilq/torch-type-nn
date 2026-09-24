@@ -184,21 +184,23 @@ MODELS = {
 }
 
 
-def build(kind, n_in, n_out, seed, lr, steps, epochs, device):
-    """Model, optimizer and (for scaled models) the started scaler."""
+def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE):
+    """Model, optimizer and (for scaled models) the started scaler. The same
+    constructor serves the board (``lr * 0.1``, as bench.c) and scale.py."""
     family, rule, through = MODELS[kind]
+    lr = lr * lr_scale
     if family == "type-nn":
         model = TypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
-        opt = TypeAdam(model, lr=lr * LR_SCALE)
+        opt = TypeAdam(model, lr=lr)
         target = TypeNNAdapter(model, width_through_depth_probe=through)
     elif family == "mlp-scaled":
         # born with one hidden layer of max(2, m) units; stock Adam
         model = ScalableMLP(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=lr * LR_SCALE)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
         target = model
     else:
         model = MLP(n_in, n_out, seed).to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=lr * LR_SCALE)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
         return model, opt, None
     scaler = StructureScaler(target, opt, epochs=epochs, steps_per_epoch=steps, rule=rule)
     scaler.begin()

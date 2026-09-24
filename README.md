@@ -152,18 +152,76 @@ nix run .#board -- benchmarks/out/torch-board.jsonl > BOARD.md
 Everything is wired through `flake.nix`:
 
 ```sh
-nix develop            # python + torch + pytest + build tools (or: direnv allow)
+nix develop            # python + torch + pytest + build tools (or: direnv allow);
+                       # also copies the pinned datasets to benchmarks/data
 pytest                 # run the tests from the checkout
 nix run .#test         # same, without entering the shell
-nix flake check        # build the package, run pytest inside the build, ruff
+nix flake check        # build the package, run pytest inside the build (with the
+                       # pinned datasets), ruff
 nix build              # ./result: the installed package
 nix run .#dist         # sdist + wheel in ./dist, checked by twine
 nix run .#publish -- --repository testpypi   # upload (TestPyPI first)
 ```
 
-The first `nix` command writes `flake.lock`; commit it.
+The benchmark datasets are pinned (URL + SRI hash) in
+`benchmarks/datasets.json` and never committed; see
+[benchmarks/data/README.md](benchmarks/data/README.md).
 
-Without Nix: `pip install -e ".[dev]" && pytest`.
+Without Nix: `pip install -e ".[dev]" && python benchmarks/fetch_data.py && pytest`.
+
+### On a GPU
+
+Every test that takes the `device` fixture also runs on `cuda` when a CUDA
+device is visible; `TNN_REQUIRE_CUDA=1` makes a missing GPU an error rather
+than a skip. One script runs the GPU suite (the whole test-suite with
+`TNN_REQUIRE_CUDA=1`, then the board's training loop for every model on the
+device), in two ways:
+
+```sh
+nix run .#test-cuda              # on the host, now: no Nix configuration needed
+nix build .#cuda-tests -L        # in the build sandbox: needs the `cuda` feature
+nix flake check --impure         # adds checks.cuda when /dev/nvidiactl exists
+TORCH_TYPE_NN_CUDA=1 nix flake check --impure   # force it (=0: leave it out)
+nix develop .#cuda               # torch-bin (CUDA 13.0) shell
+nix run .#bench-cuda -- all all --seeds 5 --device cuda
+```
+
+A plain `nix flake check` is a pure evaluation, which cannot see the host, so
+it never adds the GPU check. With `--impure` it adds `checks.cuda` when a GPU
+is visible (`/dev/nvidiactl`) *and* the Nix daemon enables the `cuda` system
+feature (read from `/etc/nix/nix.conf`, `/etc/nix/nix.custom.conf`,
+`NIX_CONFIG`); a GPU without the feature skips the check with a warning.
+`TORCH_TYPE_NN_CUDA=1` / `=0` forces it on / off.
+
+The sandboxed check declares `requiredSystemFeatures = [ "cuda" ]`, so the
+daemon must advertise the feature and expose the GPU to the build:
+
+**NixOS:**
+
+```nix
+programs.nix-required-mounts = {
+  enable = true;
+  presets.nvidia-gpu.enable = true;   # adds the cuda/gpu/opengl features and
+};                                    # mounts the driver + /dev/nvidia* for them
+# Setting nix.settings.system-features replaces the default list, so keep the
+# features you rely on (nixos-test, benchmark, big-parallel, kvm, ...):
+nix.settings.system-features = [ "nixos-test" "benchmark" "big-parallel" "kvm" ];
+```
+
+**Other Linux (Nix daemon):** find the directory holding the driver's
+`libcuda.so.1` (`ldconfig -p | grep libcuda.so.1`; e.g. `/usr/lib/x86_64-linux-gnu`
+on Debian/Ubuntu, `/usr/lib` on Arch), then in `/etc/nix/nix.conf`:
+
+```
+extra-system-features = cuda
+extra-sandbox-paths = /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools? /run/opengl-driver/lib=/usr/lib/x86_64-linux-gnu
+```
+
+and restart the daemon (`sudo systemctl restart nix-daemon`). torch-bin looks
+for the driver in `/run/opengl-driver/lib`; the `target=source` form mounts the
+host's driver directory there inside the sandbox only (a trailing `?` marks a
+path that may be missing). With several GPUs add `/dev/nvidia1`, ... Check with
+`nix build .#cuda-tests -L`.
 
 ## License
 

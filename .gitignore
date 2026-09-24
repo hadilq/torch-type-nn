@@ -9,3 +9,7 @@ result
 result-*
 .direnv/
 benchmarks/out/
+# benchmark data: pinned in benchmarks/datasets.json, fetched by `nix develop`
+# (or benchmarks/fetch_data.py), never committed
+benchmarks/data/*
+!benchmarks/data/README.md

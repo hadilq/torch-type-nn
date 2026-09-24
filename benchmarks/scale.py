@@ -3,15 +3,21 @@
 Two tasks the type-nn board does not cover, trained in mini-batches:
 
 * ``digits``: UCI optical digits (1797 x 64 pixels, 10 classes), one-hot MSE;
-* ``friedman``: Friedman #1 regression (10 000 x 10 inputs, of which 5 are
-  pure noise): ``y = 10 sin(pi x0 x1) + 20 (x2 - 0.5)^2 + 10 x3 + 5 x4 + e``,
-  ``e ~ N(0, 1)``; target min-max scaled on the training rows.
+* ``friedman``: Friedman #1 regression, the fixed Delve / OpenML 564 "fried"
+  file (40 768 x 10 inputs, of which 5 are pure noise):
+  ``y = 10 sin(pi x1 x2) + 20 (x3 - 0.5)^2 + 10 x4 + 5 x5 + e``, ``e ~ N(0, 1)``;
+  target min-max scaled on the training rows. Since ``Var(e) = 1`` is known,
+  the best reachable hold-out MSE is ``1 / span^2`` (span: the training range
+  of y); it is computed from the data and reported as ``noise_floor``.
 
-Same 70/30 xorshift split and train-only standardisation as ``bench.py``.
-Models: type-nn (TypeAdam), the scaled MLP (stock Adam), and two fixed MLPs
-(16 hidden units, the board's baseline rule; and 64).
+Both files are pinned in ``datasets.json`` (fetched by ``nix develop`` or
+``fetch_data.py``). Same 70/30 xorshift split and train-only standardisation
+as ``bench.py``; the type-nn and scaled-MLP models come from ``bench.MODELS``
+(built by ``bench.build`` at the task's lr), plus two fixed MLPs (16 hidden
+units, the board's baseline rule; and 64).
 
-    python benchmarks/scale.py [digits|friedman|all] [--seeds 3] [--batch-size 32]
+    python benchmarks/scale.py [digits|friedman|all] [--models type-nn,mlp-16]
+                               [--seeds 5] [--batch-size 32] [--device cuda]
 """
 
 from __future__ import annotations
@@ -32,35 +38,49 @@ sys.path.insert(0, str(Path(__file__).parent))
 import bench  # noqa: E402
 
 from torch_type_nn import (  # noqa: E402
-    ScalableMLP,
-    StructureScaler,
-    TypeAdam,
-    TypeNN,
-    TypeNNAdapter,
     mse_loss,
     readout,
 )
 
 D = torch.float64
 TASKS = {"digits": (60, 0.003), "friedman": (40, 0.003)}   # epochs, Adam lr
+FILES = {"digits": "digits.csv.gz", "friedman": "564_fried.tsv.gz"}
+FIXED = {"mlp-16": 16, "mlp-64": 64}
+
+
+def load_friedman(path) -> tuple[torch.Tensor, torch.Tensor]:
+    """The fried TSV: a header, 10 inputs and the target (``target`` column,
+    else the last one)."""
+    lines = [ln for ln in gzip.open(path, "rt").read().splitlines() if ln.strip()]
+    head = lines[0].split("\t")
+    try:
+        [float(v) for v in head]
+        rows, cols = lines, [f"x{i}" for i in range(len(head))]
+    except ValueError:
+        rows, cols = lines[1:], [c.strip() for c in head]
+    low = [c.lower() for c in cols]
+    ti = low.index("target") if "target" in low else len(cols) - 1
+    data = torch.tensor([list(map(float, ln.split("\t"))) for ln in rows], dtype=D)
+    keep = [j for j in range(len(cols)) if j != ti]
+    return data[:, keep], data[:, ti:ti + 1]
 
 
 def load(task: str):
+    path = bench.data_file(FILES[task])
     if task == "digits":
         rows = [list(map(float, ln.split(",")))
-                for ln in gzip.open(bench.DATA / "digits.csv.gz", "rt").read().splitlines()
-                if ln.strip()]
+                for ln in gzip.open(path, "rt").read().splitlines() if ln.strip()]
         X = torch.tensor([r[:64] for r in rows], dtype=D)
         Y = torch.nn.functional.one_hot(torch.tensor([int(r[64]) for r in rows]), 10).to(D)
         return X, Y, True
-    g = torch.Generator().manual_seed(bench.SPLIT_SEED)
-    X = torch.rand(10000, 10, dtype=D, generator=g)
-    y = (10 * torch.sin(math.pi * X[:, 0] * X[:, 1]) + 20 * (X[:, 2] - 0.5) ** 2
-         + 10 * X[:, 3] + 5 * X[:, 4] + torch.randn(10000, dtype=D, generator=g))
-    return X, y.unsqueeze(1), False
+    X, Y = load_friedman(path)
+    if X.shape[1] != 10:
+        raise ValueError(f"{path}: expected 10 inputs, found {X.shape[1]}")
+    return X, Y, False
 
 
 def split(task: str):
+    """(Xtr, Ytr, Xte, Yte, classify, noise_floor)."""
     X, Y, classify = load(task)
     n = X.shape[0]
     perm = list(range(n))
@@ -70,10 +90,12 @@ def split(task: str):
     mean, sd = X[tr].mean(0), X[tr].std(0)
     sd = torch.where(sd < 1e-12, torch.ones_like(sd), sd)
     X = (X - mean) / sd
+    floor = None
     if not classify:
         lo, hi = Y[tr].min(0).values, Y[tr].max(0).values
         Y = (Y - lo) / (hi - lo)
-    return X[tr], Y[tr], X[te], Y[te], classify
+        floor = float((1.0 / (hi - lo) ** 2).mean())      # Var(e) = 1 before scaling
+    return X[tr], Y[tr], X[te], Y[te], classify, floor
 
 
 class FixedMLP(nn.Module):
@@ -90,32 +112,25 @@ class FixedMLP(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
-def run(task, kind, seed, B):
+def run(task, kind, seed, B, device="cpu", data=None):
     epochs, lr = TASKS[task]
-    Xtr, Ytr, Xte, Yte, classify = split(task)
+    Xtr, Ytr, Xte, Yte, classify, _ = data or split(task)
+    Xtr, Ytr, Xte, Yte = (t.to(device) for t in (Xtr, Ytr, Xte, Yte))
     n_in, n_out, n = Xtr.shape[1], Ytr.shape[1], Xtr.shape[0]
     steps = math.ceil(n / B)
-    scaler = None
-    if kind in ("type-nn", "type-nn-through"):
-        model = TypeNN(n_in, n_out, seed=seed, dtype=D)
-        opt = TypeAdam(model, lr=lr)
-    elif kind == "mlp-scaled":
-        model = ScalableMLP(n_in, n_out, seed=seed, dtype=D)
+    if kind in FIXED:
+        model = FixedMLP(n_in, n_out, FIXED[kind], seed).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
+        scaler = None
     else:
-        model = FixedMLP(n_in, n_out, int(kind.split("-")[1]), seed)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
-    if kind in ("type-nn", "type-nn-through", "mlp-scaled"):
-        target = (TypeNNAdapter(model, width_through_depth_probe=True)
-                  if kind == "type-nn-through" else model)
-        scaler = StructureScaler(target, opt, epochs=epochs, steps_per_epoch=steps)
-        scaler.begin()
+        model, opt, scaler = bench.build(kind, n_in, n_out, seed, lr, steps, epochs,
+                                         device, lr_scale=1.0)
     g = torch.Generator().manual_seed(seed)
     curve = []
     t0 = time.perf_counter()
     model.train()
     for _ in range(epochs):
-        order = torch.randperm(n, generator=g)
+        order = torch.randperm(n, generator=g).to(device)
         for s in range(0, n, B):
             idx = order[s:s + B]
             x, t = Xtr[idx], Ytr[idx]
@@ -148,22 +163,32 @@ def run(task, kind, seed, B):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("task", nargs="?", default="all", choices=["all", *TASKS])
-    ap.add_argument("--models", default="type-nn,mlp-scaled,mlp-16,mlp-64")
-    ap.add_argument("--seeds", type=int, default=3)
+    ap.add_argument("--models", default="type-nn,type-nn-bic,mlp-scaled,mlp-16,mlp-64",
+                    help="comma-separated: " + ", ".join([*bench.MODELS, *FIXED]))
+    ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--device", default="cpu")
     a = ap.parse_args(argv)
-    torch.set_num_threads(1)
+    kinds = a.models.split(",")
+    unknown = [k for k in kinds if k not in bench.MODELS and k not in FIXED]
+    if unknown:
+        ap.error(f"unknown model(s) {unknown}")
+    if a.device == "cpu":
+        torch.set_num_threads(1)
     for task in (list(TASKS) if a.task == "all" else [a.task]):
-        for kind in a.models.split(","):
+        data = split(task)
+        for kind in kinds:
             runs = []
             for s in range(a.seeds):
-                r = run(task, kind, bench.SPLIT_SEED + 7919 * (s + 1), a.batch_size)
+                r = run(task, kind, bench.SPLIT_SEED + 7919 * (s + 1), a.batch_size,
+                        a.device, data)
                 runs.append(r)
                 print(f"  {task} {kind} seed {s}: hold {r['hold_mse']:.5f} acc {r['hold_acc']} "
                       f"params {r['params']} {r['structure']} {r['train_s']:.0f}s",
                       file=sys.stderr, flush=True)
             hm = [r["hold_mse"] for r in runs]
             out = {"task": task, "impl": kind, "seeds": a.seeds, "batch_size": a.batch_size,
+                   "device": a.device, "n_train": data[0].shape[0], "noise_floor": data[5],
                    "epochs": TASKS[task][0], "lr": TASKS[task][1],
                    "hold_mse": statistics.fmean(hm),
                    "hold_mse_sd": statistics.stdev(hm) if len(hm) > 1 else 0.0,
