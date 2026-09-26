@@ -237,37 +237,7 @@ path that may be missing). With several GPUs add `/dev/nvidia1`, ... Check with
 
 ## Publishing
 
-Releases go to PyPI from GitHub Actions with trusted publishing
-(`.github/workflows/publish.yml`): no API token is stored anywhere.
-
-One-time setup, on PyPI → *Your account* → *Publishing* → *Add a new pending
-publisher* → *GitHub*:
-
-| field | value |
-|---|---|
-| PyPI Project Name | `torch-type-nn` |
-| Owner | `hadilq` |
-| Repository name | `torch-type-nn` |
-| Workflow name | `publish.yml` |
-| Environment name | `pypi` |
-
-For TestPyPI, the same on test.pypi.org (a separate account) with environment
-`testpypi`. GitHub creates both environments on first use; add protection
-rules (e.g. required reviewers) under *Settings → Environments* if wanted.
-
-Release:
-
-```sh
-# 1. set the version in pyproject.toml (e.g. 0.1.0), commit, push
-# 2. rehearse: Actions → publish → Run workflow → testpypi
-# 3. release: the tag must equal the version
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The workflow builds the sdist and wheel, runs the test-suite against the
-built wheel (CPU torch), and only then uploads. Locally, `nix run .#dist`
-builds and checks the same files; `nix run .#publish` uploads them with
-twine and a token.
+It's in development state, but you can use download it from PyPI [here](https://pypi.org/project/torch-type-nn/).
 
 ## License
 
