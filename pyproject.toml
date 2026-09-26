@@ -34,6 +34,9 @@ Board = "https://github.com/hadilq/torch-type-nn/blob/main/BOARD.md"
 [tool.hatch.build.targets.wheel]
 packages = ["src/torch_type_nn"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/torch_type_nn/native/c" = "torch_type_nn/native/c"
+
 # The sdist carries what the test-suite needs (tests import benchmarks/*.py);
 # the datasets are not in it (git-ignored; fetch with benchmarks/fetch_data.py).
 [tool.hatch.build.targets.sdist]

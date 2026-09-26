@@ -46,6 +46,27 @@ for epoch in range(E):
 scaler.end()                             # last prune; no probe survives
 ```
 
+### C backend (ragged Ors, smaller footprint)
+
+The torch `AndOr` pads every unit to the layer's max degree so a batch is
+one GEMM. That uses more memory than the live graph. The C models keep one
+`w[n_in]` per live Or and scale memory with the structure. They are wrapped
+as `NativeTypeNN` (compiled on first use; needs `cc`):
+
+```python
+from torch_type_nn import NativeTypeNN, available_backends, get_backend
+
+net = NativeTypeNN(4, 3, rule="threshold")   # C type-nn-overfit
+# net = NativeTypeNN(4, 3, rule="bic")       # C type-nn
+result = net.fit(X, Y, epochs=250, lr=0.05)  # task lr; C applies × 0.1
+print(net.structure(), net.num_params(), result.counters)
+```
+
+`get_backend("torch")` / `get_backend("c")` return the class.
+`get_backend("cuda")` is reserved for a device store with the same ragged
+layout — not a port of the padded tensors. See
+[docs/BACKENDS.md](docs/BACKENDS.md).
+
 ## Structure learning
 
 One dummy rule on three axes. A **probe** is an identity that back-prop is
