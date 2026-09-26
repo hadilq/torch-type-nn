@@ -88,6 +88,10 @@
           preCheck = ''
             export TYPE_NN_SRC=${type-nn-c}
             export TORCH_TYPE_NN_DATA=${dataDir} TNN_REQUIRE_DATA=1
+            # NativeTypeNN compiles src/torch_type_nn/native/c into libtnn_py.so
+            # here (sandbox $HOME is not writable)
+            export XDG_CACHE_HOME="$TMPDIR"
+            export TNN_PY_LIB="$TMPDIR/libtnn_py.so"
           '';
           pythonImportsCheck = [ "torch_type_nn" ];
 

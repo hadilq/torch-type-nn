@@ -54,6 +54,25 @@ def test_write_refuses_a_board_without_the_markers(tmp_path):
         board.write(md, {"port": ["x"]})
 
 
+def test_c_board_rows_are_nativetypenn_impl_ids():
+    """bench.py writes impl type-nn / type-nn-overfit for NativeTypeNN cells."""
+    import bench
+    from torch_type_nn import NativeTypeNN
+    assert bench.IMPL["c-type-nn"] == "type-nn"
+    assert bench.IMPL["c-type-nn-overfit"] == "type-nn-overfit"
+    assert bench.MODELS["c-type-nn"] == ("c", "bic", None)
+    assert bench.MODELS["c-type-nn-overfit"] == ("c", "threshold", None)
+    assert board.NAMES["type-nn"] == "C type-nn"
+    assert board.NAMES["type-nn-overfit"] == "C type-nn-overfit"
+    assert "NativeTypeNN" in (bench.train_c.__doc__ or "")
+    try:
+        bench.build("c-type-nn", 2, 1, 1, 0.08, 4, 1, "cpu")
+        raise AssertionError("build() must refuse C models")
+    except TypeError as e:
+        assert "NativeTypeNN" in str(e)
+    assert NativeTypeNN.name == "c"
+
+
 def test_a_missing_c_reference_is_an_error(tmp_path):
     with pytest.raises(SystemExit, match="C reference"):
         board.sections([], [], str(tmp_path / "missing.jsonl"))

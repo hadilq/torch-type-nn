@@ -271,7 +271,7 @@ def test_degree_items_are_judged_after_width_drops():
 
 
 def _stack_aligned(net):
-    for a, b in zip(net.layers, net.layers[1:]):
+    for a, b in zip(net.layers, net.layers[1:], strict=False):
         assert a.out_features == b.in_features, (a.out_features, b.in_features)
 
 

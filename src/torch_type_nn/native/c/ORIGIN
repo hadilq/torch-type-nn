@@ -1,6 +1,4 @@
 Vendored snapshot of https://github.com/hadilq/type-nn at commit
-7333bf79c336396eb2356dd9cfd2f6c9a7676261 (the board's C reference).
-
-The public ABI for Python is tnn_py.h / tnn_py.c. Do not edit the
-type_nn*.c sources here; update them from that commit (or a later
-pinned one) as a whole.
+7333bf79c336396eb2356dd9cfd2f6c9a7676261, plus tnn_py.c/h (the stable
+Python ABI). Lives at src/torch_type_nn/native/c so the wheel ships the
+sources as package data once — do not also force-include them from csrc/.

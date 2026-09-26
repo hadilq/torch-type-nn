@@ -20,9 +20,9 @@ from .layer import AndOr
 from .mlp import ScalableMLP, TrackedLinear
 from .network import TypeNN, birth_depth
 from .optim import TypeAdam, keep_invariants
-from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable, Trial
 from .backend import available_backends, get_backend
 from .native import NativeTypeNN
+from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable, Trial
 from .scaling import StructureScaler
 from .train import FitResult, fit, mse_loss
 

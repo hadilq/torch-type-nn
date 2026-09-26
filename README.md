@@ -46,26 +46,24 @@ for epoch in range(E):
 scaler.end()                             # last prune; no probe survives
 ```
 
-### C backend (ragged Ors, smaller footprint)
+### C backend (board rows "C type-nn" / "C type-nn-overfit")
 
-The torch `AndOr` pads every unit to the layer's max degree so a batch is
-one GEMM. That uses more memory than the live graph. The C models keep one
-`w[n_in]` per live Or and scale memory with the structure. They are wrapped
-as `NativeTypeNN` (compiled on first use; needs `cc`):
+The torch `AndOr` pads every unit to max degree. C keeps one `w[n_in]` per
+live Or. Those models are `NativeTypeNN`, and they are what the board
+calls **C type-nn** and **C type-nn-overfit**:
 
 ```python
-from torch_type_nn import NativeTypeNN, available_backends, get_backend
-
+from torch_type_nn import NativeTypeNN
 net = NativeTypeNN(4, 3, rule="threshold")   # C type-nn-overfit
 # net = NativeTypeNN(4, 3, rule="bic")       # C type-nn
-result = net.fit(X, Y, epochs=250, lr=0.05)  # task lr; C applies × 0.1
-print(net.structure(), net.num_params(), result.counters)
 ```
 
-`get_backend("torch")` / `get_backend("c")` return the class.
+```sh
+python benchmarks/bench.py iris c-type-nn,c-type-nn-overfit
+```
+
 `get_backend("cuda")` is reserved for a device store with the same ragged
-layout — not a port of the padded tensors. See
-[docs/BACKENDS.md](docs/BACKENDS.md).
+layout. See [docs/BACKENDS.md](docs/BACKENDS.md).
 
 ## Structure learning
 

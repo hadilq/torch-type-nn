@@ -205,6 +205,9 @@ def main(argv=None):
     unknown = [k for k in kinds if k not in bench.MODELS and k not in FIXED]
     if unknown:
         ap.error(f"unknown model(s) {unknown}")
+    native = [k for k in kinds if k in bench.MODELS and bench.MODELS[k][0] == "c"]
+    if native:
+        ap.error(f"{native} are NativeTypeNN (per-sample C protocol); use bench.py, not scale.py")
     if a.device == "cpu":
         torch.set_num_threads(1)
     tasks = list(TASKS) if a.task == "all" else [a.task]

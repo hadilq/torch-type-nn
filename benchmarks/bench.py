@@ -14,6 +14,8 @@ Models (``MODELS``; every one goes through the same ``train`` loop):
     type-nn-bic          the same with the BIC prior (rule="bic")
     ref-type-nn          C's type-nn exactly: rule="bic", width_through_depth_probe=False
     ref-type-nn-overfit  C's type-nn-overfit exactly: threshold rule, no width through the probe
+    c-type-nn            NativeTypeNN wrapping C type-nn (BIC); board row "C type-nn"
+    c-type-nn-overfit    NativeTypeNN wrapping C type-nn-overfit; board row "C type-nn-overfit"
     mlp                  the c-mlp baseline: Linear-ReLU-Linear, 8 or 16 hidden units
     mlp-scaled           ScalableMLP grown and pruned by the default (threshold) rule
 
@@ -39,6 +41,7 @@ import torch
 from torch import nn
 
 from torch_type_nn import (
+    NativeTypeNN,
     ScalableMLP,
     StructureScaler,
     TypeAdam,
@@ -144,13 +147,26 @@ def split(task: str):
     Xt = torch.tensor(X, dtype=torch.float64)
     Yt = torch.tensor(Y, dtype=torch.float64)
     tr, te = perm[:ntr], perm[ntr:]
-    mean = Xt[tr].mean(0)
-    sd = Xt[tr].std(0, unbiased=True)
+    # dataset.c: mean / sample-sd over training rows in perm order (not torch.std).
+    mean = torch.zeros(Xt.shape[1], dtype=torch.float64)
+    for i in tr:
+        mean += Xt[i]
+    mean = mean / ntr
+    var = torch.zeros(Xt.shape[1], dtype=torch.float64)
+    for i in tr:
+        d = Xt[i] - mean
+        var = var + d * d
+    sd = torch.sqrt(var / (ntr - 1 if ntr > 1 else 1))
     sd = torch.where(sd < 1e-12, torch.ones_like(sd), sd)
     Xt = (Xt - mean) / sd
     if not classify:
-        lo, hi = Yt[tr].min(0).values, Yt[tr].max(0).values
-        span = torch.where(hi - lo < 1e-12, torch.ones_like(hi), hi - lo)
+        lo = Yt[tr[0]].clone()
+        hi = lo.clone()
+        for i in tr[1:]:
+            lo = torch.minimum(lo, Yt[i])
+            hi = torch.maximum(hi, Yt[i])
+        span = hi - lo
+        span = torch.where(span < 1e-12, torch.ones_like(span), span)
         Yt = (Yt - lo) / span
     return Xt[tr], Yt[tr], Xt[te], Yt[te], classify
 
@@ -174,13 +190,22 @@ class MLP(nn.Module):
 
 
 # kind: (family, scaling rule, width through the depth probe)
+# family "c" is NativeTypeNN wrapping C type-nn / type-nn-overfit (ragged Ors).
 MODELS = {
     "type-nn": ("type-nn", "threshold", True),
     "type-nn-bic": ("type-nn", "bic", True),
     "ref-type-nn": ("type-nn", "bic", False),
     "ref-type-nn-overfit": ("type-nn", "threshold", False),
+    "c-type-nn": ("c", "bic", None),
+    "c-type-nn-overfit": ("c", "threshold", None),
     "mlp": ("mlp", None, None),
     "mlp-scaled": ("mlp-scaled", "threshold", True),
+}
+
+# JSON impl id written by aggregate (board.py keys).
+IMPL = {
+    "c-type-nn": "type-nn",
+    "c-type-nn-overfit": "type-nn-overfit",
 }
 
 
@@ -188,6 +213,8 @@ def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE)
     """Model, optimizer and (for scaled models) the started scaler. The same
     constructor serves the board (``lr * 0.1``, as bench.c) and scale.py."""
     family, rule, through = MODELS[kind]
+    if family == "c":
+        raise TypeError("C models are NativeTypeNN; use train_c / train(), not build()")
     lr = lr * lr_scale
     if family == "type-nn":
         model = TypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
@@ -207,7 +234,25 @@ def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE)
     return model, opt, scaler
 
 
+def train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr):
+    """C protocol via NativeTypeNN: one tnn_py_epoch per epoch (bench.c)."""
+    family, rule, _ = MODELS[kind]
+    assert family == "c"
+    net = NativeTypeNN(n_in, n_out, rule=rule, seed=seed)
+    Xtr = Xtr.detach().cpu().to(torch.float64).contiguous()
+    Ytr = Ytr.detach().cpu().to(torch.float64).contiguous()
+    net.begin(Xtr.shape[0], epochs, lr)
+    for ep in range(epochs):
+        shuf = SPLIT_SEED ^ (((ep + 1) * 0x9E3779B9) & MASK)
+        net.epoch(Xtr, Ytr, shuf)
+    net.end()
+    net.eval()
+    return net
+
+
 def train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device):
+    if MODELS[kind][0] == "c":
+        return train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr), None
     n = Xtr.shape[0]
     steps = math.ceil(n / batch)
     model, opt, scaler = build(kind, n_in, n_out, seed, lr, steps, epochs, device)
@@ -292,13 +337,23 @@ def run_seed(task, kind, s, batch, device, threads=1, timing=False):
     model, scaler = train(kind, n_in, n_out, SPLIT_SEED + 7919 * (s + 1), Xtr, Ytr,
                           epochs, lr, batch, device)
     r = {"train_s": time.perf_counter() - t0}
+    native = MODELS[kind][0] == "c"
+    if native:
+        Xtr, Ytr = Xtr.cpu(), Ytr.cpu()
+        if Xte is not None:
+            Xte, Yte = Xte.cpu(), Yte.cpu()
     r["mse"], r["acc"] = metrics(model, Xtr, Ytr, classify)
     r["hold_mse"], r["hold_acc"] = (metrics(model, Xte, Yte, classify) if Xte is not None
                                     else (None, None))
     r["params"] = model.num_params()
-    r["layers"] = model.depth if scaler else 2
-    r["structure"] = model.structure() if scaler else None
-    r["counters"] = dict(vars(scaler.counters)) if scaler else {}
+    r["layers"] = getattr(model, "depth", 2 if scaler is None else model.depth)
+    r["structure"] = model.structure() if hasattr(model, "structure") else None
+    if scaler is not None:
+        r["counters"] = dict(vars(scaler.counters))
+    elif hasattr(model, "counters"):
+        r["counters"] = model.counters()
+    else:
+        r["counters"] = {}
     r["us_per_infer"] = us_per_infer(model, Xtr) if timing else None
     r["n_in"], r["n_out"] = n_in, n_out
     return r
@@ -319,7 +374,8 @@ def aggregate(task, kind, runs, batch, device):
     col = {k: [r[k] for r in runs] for k in runs[0] if k not in ("counters",)}
     family, rule, through = MODELS[kind]
     n_in, n_out = runs[0]["n_in"], runs[0]["n_out"]
-    out = {"impl": f"torch-{kind}", "task": task, "rule": rule,
+    out = {"impl": IMPL.get(kind, f"torch-{kind}"), "task": task, "rule": rule,
+           "backend": "nativetypenn" if family == "c" else "torch",
            "width_through_depth_probe": through, "device": str(device),
            "seeds": len(runs), "epochs": epochs, "lr": lr, "batch_size": batch,
            "hold_mse": mean(col["hold_mse"]), "hold_mse_sd": sd(col["hold_mse"]),
@@ -327,7 +383,7 @@ def aggregate(task, kind, runs, batch, device):
            "mse": mean(col["mse"]), "acc": mean(col["acc"]),
            "params": mean(col["params"]), "params_sd": sd(col["params"]),
            "train_s": mean(col["train_s"]), "us_per_infer": runs[-1]["us_per_infer"],
-           "init_layers": TypeNN(n_in, n_out).birth_depth if family == "type-nn" else 2,
+           "init_layers": TypeNN(n_in, n_out).birth_depth if family in ("type-nn", "c") else 2,
            "structure": col["structure"] if any(col["structure"]) else None,
            "layers": mean(col["layers"]),
            "per_seed_hold_mse": col["hold_mse"]}

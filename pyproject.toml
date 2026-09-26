@@ -34,8 +34,10 @@ Board = "https://github.com/hadilq/torch-type-nn/blob/main/BOARD.md"
 [tool.hatch.build.targets.wheel]
 packages = ["src/torch_type_nn"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/torch_type_nn/native/c" = "torch_type_nn/native/c"
+# C sources are package data at src/torch_type_nn/native/c (tnn_py.c + type-nn).
+# Do not force-include that directory from csrc/ as well: hatchling then adds
+# ORIGIN twice and `nix flake check` / `python -m build` fail with
+# "A second file is being added to the wheel archive at the same path".
 
 # The sdist carries what the test-suite needs (tests import benchmarks/*.py);
 # the datasets are not in it (git-ignored; fetch with benchmarks/fetch_data.py).

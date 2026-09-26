@@ -1,4 +1,4 @@
-"""Compile ``libtnn_py.so`` from the vendored C sources (or ``TYPE_NN_SRC``)."""
+"""Compile libtnn_py from native/c (checkout or wheel) or TYPE_NN_SRC."""
 
 from __future__ import annotations
 
@@ -9,59 +9,55 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_VENDORED = _HERE / "c"
-_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "torch-type-nn"
 
 
-def source_dir() -> Path:
+def bridge_dir() -> Path:
+    """Directory holding tnn_py.c: package native/c, else a leftover repo-root csrc/."""
+    for cand in (_HERE / "c", _HERE.parents[2] / "csrc"):
+        if (cand / "tnn_py.c").exists():
+            return cand
+    raise FileNotFoundError("tnn_py.c not found (expected at torch_type_nn/native/c)")
+
+
+def type_nn_dir() -> Path:
+    """One tree only. Mixing TYPE_NN_SRC .c with vendored headers drifts."""
     env = os.environ.get("TYPE_NN_SRC")
-    if env:
-        p = Path(env)
-        if (p / "type_nn.c").exists():
-            return p
-    return _VENDORED
+    if env and Path(env, "type_nn.c").exists() and Path(env, "tnn_py.c").exists():
+        return Path(env)
+    return bridge_dir()
 
 
 def library_path() -> Path:
     ext = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
-    override = os.environ.get("TNN_PY_LIB")
-    if override:
-        return Path(override)
-    return _CACHE / f"libtnn_py{ext}"
+    if os.environ.get("TNN_PY_LIB"):
+        return Path(os.environ["TNN_PY_LIB"])
+    cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "torch-type-nn"
+    return cache / f"libtnn_py{ext}"
 
 
 def compile_library(force: bool = False) -> Path:
-    """Return the path to a loadable ``libtnn_py``. Compiles if needed."""
     dest = library_path()
-    src = source_dir()
+    src, bridge = type_nn_dir(), bridge_dir()
     cc = shutil.which(os.environ.get("CC", "cc")) or shutil.which("gcc")
     if not cc:
-        raise FileNotFoundError("no C compiler (cc/gcc) on PATH; cannot build the native backend")
-    needed = [
-        _VENDORED / "tnn_py.c",
-        src / "type_nn.c",
-        src / "type_nn_scale.c",
-        src / "type_nn_overfit.c",
-        src / "type_nn_overfit_scale.c",
+        raise FileNotFoundError("no C compiler (cc/gcc) on PATH")
+    files = [
+        bridge / "tnn_py.c",
+        src / "type_nn.c", src / "type_nn_scale.c",
+        src / "type_nn_overfit.c", src / "type_nn_overfit_scale.c",
     ]
-    for f in needed:
+    for f in files:
         if not f.exists():
-            raise FileNotFoundError(f"native backend source missing: {f}")
+            raise FileNotFoundError(f"native source missing: {f}")
     if dest.exists() and not force:
-        newest_src = max(f.stat().st_mtime for f in needed)
-        if dest.stat().st_mtime >= newest_src:
+        newest = max(f.stat().st_mtime for f in files)
+        if dest.stat().st_mtime >= newest:
             return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    includes = ["-I" + str(_VENDORED), "-I" + str(src)]
-    cmd = [
-        cc, "-O2", "-std=c11", "-shared", "-fPIC",
-        *includes,
-        str(_VENDORED / "tnn_py.c"),
-        str(src / "type_nn.c"),
-        str(src / "type_nn_scale.c"),
-        str(src / "type_nn_overfit.c"),
-        str(src / "type_nn_overfit_scale.c"),
-        "-lm", "-o", str(dest),
-    ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(
+        [cc, "-O2", "-std=c11", "-shared", "-fPIC",
+         f"-I{bridge}", f"-I{src}", *[str(f) for f in files],
+         "-lm", "-o", str(dest)],
+        check=True,
+    )
     return dest
