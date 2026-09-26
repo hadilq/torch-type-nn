@@ -14,14 +14,14 @@ from importlib.metadata import PackageNotFoundError, version
 
 from . import functional
 from .adapters import MLPAdapter, TypeNNAdapter
+from .backend import available_backends, get_backend
 from .edits import Edit, follow_structure
 from .functional import and_or, readout
 from .layer import AndOr
 from .mlp import ScalableMLP, TrackedLinear
+from .native import NativeTypeNN
 from .network import TypeNN, birth_depth
 from .optim import TypeAdam, keep_invariants
-from .backend import available_backends, get_backend
-from .native import NativeTypeNN
 from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable, Trial
 from .scaling import StructureScaler
 from .train import FitResult, fit, mse_loss

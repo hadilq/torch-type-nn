@@ -57,6 +57,7 @@ def test_write_refuses_a_board_without_the_markers(tmp_path):
 def test_c_board_rows_are_nativetypenn_impl_ids():
     """bench.py writes impl type-nn / type-nn-overfit for NativeTypeNN cells."""
     import bench
+
     from torch_type_nn import NativeTypeNN
     assert bench.IMPL["c-type-nn"] == "type-nn"
     assert bench.IMPL["c-type-nn-overfit"] == "type-nn-overfit"

@@ -56,6 +56,8 @@ Git: `baseline` is the tree as received; each iteration is one commit.
 | 15 | Hatch `force-include` of repo-root `csrc/` onto `torch_type_nn/native/c` while those files also lived under the package made hatchling add `ORIGIN` twice (`nix flake check` / wheel build). GitHub Actions only ran `publish.yml`. | build, CI | C sources only under `src/torch_type_nn/native/c` as package data; no `force-include`. `.github/workflows/check.yml` runs `nix flake check`. | `test_wheel_config_does_not_force_include_native_c` |
 | 17 | NativeTypeNN cells drifted from type-nn: torch `mean`/`std` and a Python `dy` differed from `dataset.c`/`bench.c` by ulps and changed BIC prune. The frozen JSONL is 30 seeds; type-nn `BOARD.txt` is 5. | spec | `tnn_py_epoch` is bench.c; `split()` uses perm-order sample sd. | `test_iris_one_seed_matches_c_bench` |
 
+| 18 | C type-nn-overfit hold-out can be *higher* than C type-nn (iris, diabetes) while using more params. Easy to read as a wrapper bug. | honesty | those 5-seed cells match type-nn `BOARD.txt`; overfit is displacement-only, BIC is a prior on measured MSE. Overfit still beats c-mlp on hold-out where the C board does. | BOARD.md "type-nn vs type-nn-overfit" |
+
 ## Upstream issues met on the way (not in this code)
 
 - nixpkgs: `cudaPackages_13` (13.3) applies a cccl patch the 13.3.3 release
