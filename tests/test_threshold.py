@@ -268,3 +268,47 @@ def test_degree_items_are_judged_after_width_drops():
         sc._prune_band()
     assert seen and all(n == 1 for n in seen), "degree judged after the coordinate went"
     assert r >= 0 and net.structure()[1] == [1]
+
+
+def _stack_aligned(net):
+    for a, b in zip(net.layers, net.layers[1:]):
+        assert a.out_features == b.in_features, (a.out_features, b.in_features)
+
+
+def test_width_candidates_skip_the_depth_probe():
+    """A width item is a producer coordinate. The depth probe only carries
+    one; listing it as a producer would drop the same column twice when
+    width grows through the probe, and the stack would stop being dense."""
+    net = TypeNN(3, 2, depth=2, seed=8, dtype=D)
+    a = TypeNNAdapter(net)
+    from torch_type_nn.protocol import EditContext
+    ctx = EditContext(0, 0.0, torch.Generator().manual_seed(0))
+    a.add_probe(DEPTH, 1, ctx)                 # [L0, probe, L1]
+    a._add_width_probe(0, ctx)                 # extra coordinate through the probe
+    _stack_aligned(net)
+    width = [it for it in a.prune_candidates() if it.axis == WIDTH]
+    producers = {it.address[0] for it in width}
+    probe = next(i for i, l in enumerate(net.layers) if l.probe)
+    assert probe not in producers
+    assert 0 in producers
+    # drop the extra coordinate: the probe stays square and the stack aligned
+    extra = net.layers[0].out_features - 1
+    before = a.params_without([Item(WIDTH, (0, extra))])
+    a.commit_removals([Item(WIDTH, (0, extra))], axes=(WIDTH,))
+    _stack_aligned(net)
+    probe_l = next(l for l in net.layers if l.probe)
+    assert probe_l.in_features == probe_l.out_features
+    assert net.num_params() == before
+
+
+def test_params_without_counts_the_probe_carrier():
+    net = TypeNN(4, 2, depth=2, seed=9, dtype=D)
+    a = TypeNNAdapter(net)
+    from torch_type_nn.protocol import EditContext
+    ctx = EditContext(0, 0.0, torch.Generator().manual_seed(1))
+    a.add_probe(DEPTH, 1, ctx)
+    a._add_width_probe(0, ctx)
+    extra = net.layers[0].out_features - 1
+    trial = a.params_without([Item(WIDTH, (0, extra))])
+    a.commit_removals([Item(WIDTH, (0, extra))], axes=(WIDTH,))
+    assert trial == net.num_params()

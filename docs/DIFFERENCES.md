@@ -100,6 +100,14 @@ and removal are measured at the real consumer. The identity layer also
 carries an existing width probe instead of retiring it when inserted.
 `width_through_depth_probe=False` reproduces C.
 
+Prune lists a width item only on the producing layer (the depth probe is a
+carrier, not a producer). C's `prune_width` walks every consecutive pair,
+including the probe as a producer; that is harmless when width is blocked
+next to the probe, and is still what `width_through_depth_probe=False` does
+for a junction whose *consumer* is the probe. Listing the probe as a
+producer under the default rule would drop the same coordinate twice and
+break the dense stack.
+
 ## 6. The threshold rule's band with batches
 
 C's `type-nn-overfit` drops items inside `theta_band = lr N^(3/4)` with `N`

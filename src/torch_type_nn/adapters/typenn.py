@@ -463,12 +463,23 @@ class TypeNNAdapter:
         return []
 
     def prune_candidates(self) -> Sequence[Item]:
+        """Width candidates are the same junctions growth uses as producers.
+
+        The depth probe is never a width producer: dropping one of its
+        coordinates would make it non-square (and, with
+        ``width_through_depth_probe``, would also double-count the
+        coordinate already listed on the real producer, desynchronising
+        ``in_features``/``out_features`` down the stack). C still prunes
+        a junction whose *consumer* is the probe when width is blocked
+        there; that path is kept for ``width_through_depth_probe=False``.
+        """
         out = []
         L = self.layers
         for i, l in enumerate(L):
             out += [Item(DEGREE, (i, k, r)) for k, r in l.mask.nonzero().tolist()]
-            if i + 1 < len(L):
-                out += [Item(WIDTH, (i, k)) for k in range(l.out_features)]
+            if i + 1 >= len(L) or l.probe:
+                continue
+            out += [Item(WIDTH, (i, k)) for k in range(l.out_features)]
         return out
 
     @staticmethod
@@ -491,8 +502,19 @@ class TypeNNAdapter:
 
     def params_without(self, removed: Sequence[Item]) -> int:
         """(live Ors) x (live inputs + 2) per surviving unit. (The C reference
-        sums a per-item tally that can count an Or twice; see DIFFERENCES.md.)"""
+        sums a per-item tally that can count an Or twice; see DIFFERENCES.md.)
+
+        A width drop that crosses the depth probe also removes that
+        coordinate's carrier unit on the probe (the layer stays square),
+        so the trial count has to skip it too.
+        """
         units, ors = self._gone(removed)
+        if self.through:
+            pidx = self._probe_layer()
+            if pidx is not None:
+                units = set(units)
+                carriers = [(pidx, k) for (i, k) in units if i + 1 == pidx]
+                units.update(carriers)
         total, n_in = 0, self.layers[0].in_features
         for i, l in enumerate(self.layers):
             n_out = 0
@@ -518,6 +540,10 @@ class TypeNNAdapter:
                  if any(a[0] == i for a in units)}
         for i in reversed(range(len(layers))):
             l = layers[i]
+            # Width drops are owned by the producing junction. The depth
+            # probe is never a producer: shrinking it is _drop_coordinate's
+            # job when the real producer (the layer in front) is dropped.
+            drop_width_here = do_width and i + 1 < len(layers) and not l.probe
             for k in reversed(range(l.out_features)):
                 gone = (i, k) in units
                 for r in reversed(range(l.degree if do_degree else 0)):
@@ -531,7 +557,7 @@ class TypeNNAdapter:
                     elif was_probe and not gone:
                         l.or_probe[k, r] = False
                         c["and_add"] += 1
-                if do_width and i + 1 < len(layers):
+                if drop_width_here:
                     was_probe = bool(l.unit_probe[k])
                     if gone:
                         m = means.get(i)
