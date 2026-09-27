@@ -16,6 +16,8 @@ Models (``MODELS``; every one goes through the same ``train`` loop):
     ref-type-nn-overfit  C's type-nn-overfit exactly: threshold rule, no width through the probe
     c-type-nn            NativeTypeNN wrapping C type-nn (BIC); board row "C type-nn"
     c-type-nn-overfit    NativeTypeNN wrapping C type-nn-overfit; board row "C type-nn-overfit"
+    cuda-type-nn         CudaTypeNN ragged device store, BIC prune
+    cuda-type-nn-overfit CudaTypeNN ragged device store, threshold rule
     mlp                  the c-mlp baseline: Linear-ReLU-Linear, 8 or 16 hidden units
     mlp-scaled           ScalableMLP grown and pruned by the default (threshold) rule
 
@@ -41,6 +43,7 @@ import torch
 from torch import nn
 
 from torch_type_nn import (
+    CudaTypeNN,
     NativeTypeNN,
     ScalableMLP,
     StructureScaler,
@@ -198,6 +201,8 @@ MODELS = {
     "ref-type-nn-overfit": ("type-nn", "threshold", False),
     "c-type-nn": ("c", "bic", None),
     "c-type-nn-overfit": ("c", "threshold", None),
+    "cuda-type-nn": ("cuda", "bic", None),
+    "cuda-type-nn-overfit": ("cuda", "threshold", None),
     "mlp": ("mlp", None, None),
     "mlp-scaled": ("mlp-scaled", "threshold", True),
 }
@@ -206,6 +211,8 @@ MODELS = {
 IMPL = {
     "c-type-nn": "type-nn",
     "c-type-nn-overfit": "type-nn-overfit",
+    "cuda-type-nn": "cuda-type-nn",
+    "cuda-type-nn-overfit": "cuda-type-nn-overfit",
 }
 
 
@@ -215,6 +222,8 @@ def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE)
     family, rule, through = MODELS[kind]
     if family == "c":
         raise TypeError("C models are NativeTypeNN; use train_c / train(), not build()")
+    if family == "cuda":
+        raise TypeError("CUDA models are CudaTypeNN; use train_cuda / train(), not build()")
     lr = lr * lr_scale
     if family == "type-nn":
         model = TypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
@@ -250,9 +259,27 @@ def train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr):
     return net
 
 
+def train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device):
+    """Ragged CudaTypeNN: fused Or GEMM, one sample Adam, C shuffle."""
+    family, rule, _ = MODELS[kind]
+    assert family == "cuda"
+    net = CudaTypeNN(n_in, n_out, rule=rule, seed=seed, device=device)
+    Xtr = Xtr.detach().to(dtype=torch.float64, device=net.device).contiguous()
+    Ytr = Ytr.detach().to(dtype=torch.float64, device=net.device).contiguous()
+    net.begin(Xtr.shape[0], epochs, lr)
+    for ep in range(epochs):
+        shuf = SPLIT_SEED ^ (((ep + 1) * 0x9E3779B9) & MASK)
+        net.epoch(Xtr, Ytr, shuf)
+    net.end()
+    net.eval()
+    return net
+
+
 def train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device):
     if MODELS[kind][0] == "c":
         return train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr), None
+    if MODELS[kind][0] == "cuda":
+        return train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device), None
     n = Xtr.shape[0]
     steps = math.ceil(n / batch)
     model, opt, scaler = build(kind, n_in, n_out, seed, lr, steps, epochs, device)
@@ -375,7 +402,7 @@ def aggregate(task, kind, runs, batch, device):
     family, rule, through = MODELS[kind]
     n_in, n_out = runs[0]["n_in"], runs[0]["n_out"]
     out = {"impl": IMPL.get(kind, f"torch-{kind}"), "task": task, "rule": rule,
-           "backend": "nativetypenn" if family == "c" else "torch",
+           "backend": {"c": "nativetypenn", "cuda": "cudatypenn"}.get(family, "torch"),
            "width_through_depth_probe": through, "device": str(device),
            "seeds": len(runs), "epochs": epochs, "lr": lr, "batch_size": batch,
            "hold_mse": mean(col["hold_mse"]), "hold_mse_sd": sd(col["hold_mse"]),
@@ -383,7 +410,8 @@ def aggregate(task, kind, runs, batch, device):
            "mse": mean(col["mse"]), "acc": mean(col["acc"]),
            "params": mean(col["params"]), "params_sd": sd(col["params"]),
            "train_s": mean(col["train_s"]), "us_per_infer": runs[-1]["us_per_infer"],
-           "init_layers": TypeNN(n_in, n_out).birth_depth if family in ("type-nn", "c") else 2,
+           "init_layers": (TypeNN(n_in, n_out).birth_depth
+                           if family in ("type-nn", "c", "cuda") else 2),
            "structure": col["structure"] if any(col["structure"]) else None,
            "layers": mean(col["layers"]),
            "per_seed_hold_mse": col["hold_mse"]}

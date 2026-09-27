@@ -74,6 +74,24 @@ def test_c_board_rows_are_nativetypenn_impl_ids():
     assert NativeTypeNN.name == "c"
 
 
+def test_cuda_board_rows_are_cudatypenn_impl_ids():
+    import bench
+
+    from torch_type_nn import CudaTypeNN
+    assert bench.IMPL["cuda-type-nn"] == "cuda-type-nn"
+    assert bench.IMPL["cuda-type-nn-overfit"] == "cuda-type-nn-overfit"
+    assert bench.MODELS["cuda-type-nn"] == ("cuda", "bic", None)
+    assert bench.MODELS["cuda-type-nn-overfit"] == ("cuda", "threshold", None)
+    assert board.NAMES["cuda-type-nn"] == "cuda type-nn"
+    assert "CudaTypeNN" in (bench.train_cuda.__doc__ or "")
+    try:
+        bench.build("cuda-type-nn", 2, 1, 1, 0.08, 4, 1, "cpu")
+        raise AssertionError("build() must refuse CUDA models")
+    except TypeError as e:
+        assert "CUDA" in str(e) or "cuda" in str(e).lower()
+    assert CudaTypeNN.name == "cuda"
+
+
 def test_a_missing_c_reference_is_an_error(tmp_path):
     with pytest.raises(SystemExit, match="C reference"):
         board.sections([], [], str(tmp_path / "missing.jsonl"))

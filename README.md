@@ -62,8 +62,17 @@ net = NativeTypeNN(4, 3, rule="threshold")   # C type-nn-overfit
 python benchmarks/bench.py iris c-type-nn,c-type-nn-overfit
 ```
 
-`get_backend("cuda")` is reserved for a device store with the same ragged
-layout. See [docs/BACKENDS.md](docs/BACKENDS.md).
+`CudaTypeNN` is the same ragged layout packed for a fused GEMM on a torch
+device (CUDA when present). Board models `cuda-type-nn` /
+`cuda-type-nn-overfit`:
+
+```sh
+python benchmarks/bench.py xor cuda-type-nn,cuda-type-nn-overfit --device cuda
+```
+
+`nix flake check -L` prints `torch-type-nn device: …` from pytest so a
+GPU run cannot look green without saying which device it used. See
+[docs/BACKENDS.md](docs/BACKENDS.md).
 
 ## Structure learning
 

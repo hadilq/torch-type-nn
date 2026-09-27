@@ -14,6 +14,26 @@ import torch
 REQUIRE_CUDA = os.environ.get("TNN_REQUIRE_CUDA") == "1"
 
 
+def _device_banner() -> str:
+    built = torch.version.cuda or "cpu-only"
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        cap = torch.cuda.get_device_capability(0)
+        return (f"torch-type-nn device: CUDA {name} "
+                f"cap {cap[0]}.{cap[1]} (torch {torch.__version__}, built {built})")
+    return (f"torch-type-nn device: CPU "
+            f"(torch {torch.__version__}, built {built}; no CUDA device)")
+
+
+def pytest_report_header(config):
+    return [_device_banner()]
+
+
+def pytest_sessionstart(session):
+    # -q hides the header; print once so `nix flake check -L` always shows it
+    print(_device_banner(), flush=True)
+
+
 def pytest_configure(config):
     if REQUIRE_CUDA and not torch.cuda.is_available():
         raise pytest.UsageError(

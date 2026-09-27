@@ -3,7 +3,7 @@ import shutil
 import pytest
 import torch
 
-from torch_type_nn import NativeTypeNN, available_backends, get_backend
+from torch_type_nn import CudaTypeNN, NativeTypeNN, available_backends, get_backend
 from torch_type_nn.native import native_available
 
 ok, detail = native_available()
@@ -14,8 +14,7 @@ def test_backend_registry():
     names = available_backends()
     assert set(names) >= {"torch", "c", "cuda"}
     assert get_backend("c") is NativeTypeNN
-    with pytest.raises(NotImplementedError):
-        get_backend("cuda")
+    assert get_backend("cuda") is CudaTypeNN
 
 
 def test_begin_forward_structure():

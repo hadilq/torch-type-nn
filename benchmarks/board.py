@@ -39,6 +39,8 @@ NAMES = {
     "torch-type-nn-bic": "torch type-nn-bic",
     "torch-mlp": "torch MLP",
     "torch-mlp-scaled": "torch MLP, scaled",
+    "cuda-type-nn": "cuda type-nn",
+    "cuda-type-nn-overfit": "cuda type-nn-overfit",
 }
 SCALE_NAMES = {"type-nn": "**type-nn**", "type-nn-bic": "type-nn-bic",
                "mlp-scaled": "MLP, scaled", "mlp-16": "MLP-16", "mlp-64": "MLP-64"}
@@ -181,9 +183,12 @@ def sections(board, scale, reference):
     out = {}
     have_torch = bool(b_rows)
     native = any(r.get("backend") == "nativetypenn" for r in b_rows.values())
+    cuda = any(r.get("backend") == "cudatypenn" for r in b_rows.values())
     who = meta(b_rows) or "C reference only"
     if native:
         who = f"{who}; C type-nn rows from NativeTypeNN" if meta(b_rows) else "NativeTypeNN"
+    if cuda:
+        who = f"{who}; cuda type-nn rows from CudaTypeNN"
     elif any(k[1] in ("type-nn", "type-nn-overfit") for k in rows):
         who = f"{who}; C type-nn rows from the C-binary reference (run `bench.py … c-type-nn`)"
     table = per_sample_table(rows)

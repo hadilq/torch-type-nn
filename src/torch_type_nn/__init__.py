@@ -15,6 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from . import functional
 from .adapters import MLPAdapter, TypeNNAdapter
 from .backend import available_backends, get_backend
+from .cuda import CudaTypeNN
 from .edits import Edit, follow_structure
 from .functional import and_or, readout
 from .layer import AndOr
@@ -37,5 +38,5 @@ __all__ = [
     "birth_depth", "and_or", "readout", "functional", "__version__",
     "Scalable", "Item", "Trial", "EditContext", "WIDTH", "DEGREE", "DEPTH",
     "TypeNNAdapter", "MLPAdapter", "ScalableMLP", "TrackedLinear", "Edit", "follow_structure",
-    "NativeTypeNN", "get_backend", "available_backends",
+    "NativeTypeNN", "CudaTypeNN", "get_backend", "available_backends",
 ]

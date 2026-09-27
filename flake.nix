@@ -92,6 +92,15 @@
             # here (sandbox $HOME is not writable)
             export XDG_CACHE_HOME="$TMPDIR"
             export TNN_PY_LIB="$TMPDIR/libtnn_py.so"
+            python - <<'PY'
+            import torch
+            print("torch-type-nn package check: torch", torch.__version__,
+                  "cuda-built", torch.version.cuda,
+                  "cuda.is_available", torch.cuda.is_available())
+            if torch.cuda.is_available():
+                print("torch-type-nn package check: device",
+                      torch.cuda.get_device_name(0))
+            PY
           '';
           pythonImportsCheck = [ "torch_type_nn" ];
 
@@ -194,12 +203,17 @@
           export TNN_REQUIRE_CUDA=1 TNN_REQUIRE_DATA=1
           python - <<'PY' | tee "$out/device.txt"
           import torch
+          print("======== torch-type-nn CUDA probe ========")
           assert torch.cuda.is_available(), (
               "no usable CUDA device: torch-bin loads the driver's libcuda.so from "
               "/run/opengl-driver/lib (NixOS: hardware.nvidia + hardware.graphics); "
               "inside a Nix build it also needs the `cuda` system feature and its "
               "mounts (programs.nix-required-mounts.presets.nvidia-gpu.enable)")
-          print("torch", torch.__version__, "cuda", torch.version.cuda, torch.cuda.get_device_name(0))
+          cap = torch.cuda.get_device_capability(0)
+          print("torch", torch.__version__, "cuda", torch.version.cuda)
+          print("device 0:", torch.cuda.get_device_name(0),
+                f"capability {cap[0]}.{cap[1]}")
+          print("==========================================")
           PY
           python -m pytest -q -p no:cacheprovider tests | tee "$out/pytest.txt"
           python benchmarks/bench.py xor all --seeds 1 --device cuda | tee "$out/bench-xor-cuda.jsonl"

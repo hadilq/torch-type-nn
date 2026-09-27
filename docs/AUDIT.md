@@ -58,6 +58,10 @@ Git: `baseline` is the tree as received; each iteration is one commit.
 
 | 18 | C type-nn-overfit hold-out can be *higher* than C type-nn (iris, diabetes) while using more params. Easy to read as a wrapper bug. | honesty | those 5-seed cells match type-nn `BOARD.txt`; overfit is displacement-only, BIC is a prior on measured MSE. Overfit still beats c-mlp on hold-out where the C board does. | BOARD.md "type-nn vs type-nn-overfit" |
 
+| 19 | CUDA backend was a reserved stub (`NotImplementedError`). Padded torch AndOr is the wrong layout for a device port. | spec | `CudaTypeNN`: one `w[n_in]` per live Or on `device`; threshold grow/prune; BIC prune on a device pair cache. | `tests/test_cuda.py` |
+
+| 20 | `nix flake check` on a GPU machine was green with no log that a device was found. Packed CUDA path rebuilt Ors on every prune and reset Adam moments, which undid a fitted xor. | spec | pytest prints `torch-type-nn device: …`; flake preCheck and cudaSuite probe the device; prune indexes packed rows and keeps moments. Fused `X @ W.T` + board models `cuda-type-nn*`. | `tests/test_cuda.py`, `tests/conftest.py` |
+
 ## Upstream issues met on the way (not in this code)
 
 - nixpkgs: `cudaPackages_13` (13.3) applies a cccl patch the 13.3.3 release
