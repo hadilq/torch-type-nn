@@ -12,9 +12,10 @@ Two tasks the type-nn board does not cover, trained in mini-batches:
 
 Both files are pinned in ``datasets.json`` (fetched by ``nix develop`` or
 ``fetch_data.py``). Same 70/30 xorshift split and train-only standardisation
-as ``bench.py``; the type-nn and scaled-MLP models come from ``bench.MODELS``
-(built by ``bench.build`` at the task's lr), plus two fixed MLPs (16 hidden
-units, the board's baseline rule; and 64).
+as ``bench.py``. Torch type-nn and scaled-MLP come from ``bench.build``
+(mini-batch Adam). ``c-type-nn`` / ``c-type-nn-overfit`` use NativeTypeNN's
+per-sample C epoch (not batch 32). ``cuda-type-nn`` / ``cuda-type-nn-overfit``
+use the ragged device store the same way. Plus two fixed MLPs (16 and 64).
 
     python benchmarks/scale.py [digits|friedman|all] [--models type-nn,mlp-16]
                                [--seeds 5] [--batch-size 32] [--device cuda]
@@ -113,53 +114,79 @@ class FixedMLP(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
+def _family(kind: str) -> str:
+    if kind in FIXED:
+        return "fixed"
+    return bench.MODELS[kind][0]
+
+
 def run(task, kind, seed, B, device="cpu", data=None):
     epochs, lr = TASKS[task]
     Xtr, Ytr, Xte, Yte, classify, _ = data or split(task)
-    Xtr, Ytr, Xte, Yte = (t.to(device) for t in (Xtr, Ytr, Xte, Yte))
     n_in, n_out, n = Xtr.shape[1], Ytr.shape[1], Xtr.shape[0]
-    steps = math.ceil(n / B)
-    if kind in FIXED:
-        model = FixedMLP(n_in, n_out, FIXED[kind], seed).to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
-        scaler = None
-    else:
-        model, opt, scaler = bench.build(kind, n_in, n_out, seed, lr, steps, epochs,
-                                         device, lr_scale=1.0)
-    g = torch.Generator().manual_seed(seed)
-    curve = []
+    family = _family(kind)
     t0 = time.perf_counter()
-    model.train()
-    for _ in range(epochs):
-        order = torch.randperm(n, generator=g).to(device)
-        for s in range(0, n, B):
-            idx = order[s:s + B]
-            x, t = Xtr[idx], Ytr[idx]
-            y = model(x)
-            loss = mse_loss(y, t)
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+    if family == "c":
+        # C protocol: one sample at a time inside tnn_py_epoch. CPU only.
+        model = bench.train_c(kind, n_in, n_out, seed, Xtr.cpu(), Ytr.cpu(), epochs, lr)
+        scaler = None
+        Xtr, Ytr, Xte, Yte = Xtr.cpu(), Ytr.cpu(), Xte.cpu(), Yte.cpu()
+        curve = [model.num_params()]
+    elif family == "cuda":
+        model = bench.train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device)
+        scaler = None
+        Xtr, Ytr, Xte, Yte = (t.to(model.device) for t in (Xtr, Ytr, Xte, Yte))
+        curve = [model.num_params()]
+    else:
+        Xtr, Ytr, Xte, Yte = (t.to(device) for t in (Xtr, Ytr, Xte, Yte))
+        steps = math.ceil(n / B)
+        if kind in FIXED:
+            model = FixedMLP(n_in, n_out, FIXED[kind], seed).to(device)
+            opt = torch.optim.Adam(model.parameters(), lr=lr)
+            scaler = None
+        else:
+            model, opt, scaler = bench.build(
+                kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=1.0)
+        g = torch.Generator().manual_seed(seed)
+        curve = []
+        model.train()
+        for _ in range(epochs):
+            order = torch.randperm(n, generator=g).to(device)
+            for s in range(0, n, B):
+                idx = order[s:s + B]
+                x, t = Xtr[idx], Ytr[idx]
+                y = model(x)
+                loss = mse_loss(y, t)
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+                if scaler:
+                    scaler.observe(x, y, t)
             if scaler:
-                scaler.observe(x, y, t)
+                scaler.epoch_end()
+            curve.append(model.num_params())
         if scaler:
-            scaler.epoch_end()
-        curve.append(model.num_params())
-    if scaler:
-        scaler.end()
+            scaler.end()
     train_s = time.perf_counter() - t0
     model.eval()
     with torch.no_grad():
         y = model(Xte)
         hold_mse = float(((y - Yte) ** 2).mean())
-        acc = float((y.argmax(1) == Yte.argmax(1)).double().mean()) if classify else None
+        acc = (float((y.argmax(1) == Yte.argmax(1)).double().mean())
+               if classify else None)
         train_mse = float(((model(Xtr) - Ytr) ** 2).mean())
-    shape = (model.structure() if hasattr(model, "structure") else None)
+    shape = model.structure() if hasattr(model, "structure") else None
+    counters = None
+    if scaler:
+        counters = dict(vars(scaler.counters))
+    elif hasattr(model, "counters"):
+        counters = model.counters()
     return {"hold_mse": hold_mse, "hold_acc": acc, "train_mse": train_mse,
             "params": model.num_params(), "train_s": train_s, "structure": shape,
             "layers": getattr(model, "depth", 2),
             "params_curve": curve[:: max(1, epochs // 10)],
-            "counters": dict(vars(scaler.counters)) if scaler else None}
+            "counters": counters,
+            "batch_size": 1 if family in ("c", "cuda") else B}
 
 
 _SPLITS: dict = {}
@@ -176,7 +203,8 @@ def _job(args):
 def row(task, kind, runs, a, data):
     hm = [r["hold_mse"] for r in runs]
     layers = [r.get("layers") for r in runs if r.get("layers") is not None]
-    return {"task": task, "impl": kind, "seeds": len(runs), "batch_size": a.batch_size,
+    batch = runs[0].get("batch_size", a.batch_size)
+    return {"task": task, "impl": kind, "seeds": len(runs), "batch_size": batch,
             "device": a.device, "n_train": data[0].shape[0], "noise_floor": data[5],
             "epochs": TASKS[task][0], "lr": TASKS[task][1],
             "hold_mse": statistics.fmean(hm),
@@ -193,7 +221,9 @@ def row(task, kind, runs, a, data):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("task", nargs="?", default="all", choices=["all", *TASKS])
-    ap.add_argument("--models", default="type-nn,type-nn-bic,mlp-scaled,mlp-16,mlp-64",
+    ap.add_argument("--models",
+                    default="type-nn,type-nn-bic,mlp-scaled,mlp-16,mlp-64,"
+                            "c-type-nn,c-type-nn-overfit",
                     help="comma-separated: " + ", ".join([*bench.MODELS, *FIXED]))
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=32)
@@ -205,9 +235,6 @@ def main(argv=None):
     unknown = [k for k in kinds if k not in bench.MODELS and k not in FIXED]
     if unknown:
         ap.error(f"unknown model(s) {unknown}")
-    native = [k for k in kinds if k in bench.MODELS and bench.MODELS[k][0] == "c"]
-    if native:
-        ap.error(f"{native} are NativeTypeNN (per-sample C protocol); use bench.py, not scale.py")
     if a.device == "cpu":
         torch.set_num_threads(1)
     tasks = list(TASKS) if a.task == "all" else [a.task]

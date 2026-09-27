@@ -184,7 +184,8 @@ Two independent checks against [hadilq/type-nn](https://github.com/hadilq/type-n
   writes every table of [BOARD.md](https://github.com/hadilq/torch-type-nn/blob/main/BOARD.md) from the result files.
 
 ```sh
-nix run .#board-all      # every result on all cores, then BOARD.md's tables
+nix run .#board-all      # CPU board + scale (now includes C type-nn rows)
+nix run .#board-cuda     # CUDA board → BOARD.CUDA.md (host GPU; see below)
 ```
 
 ## Development
@@ -224,6 +225,7 @@ nix flake check --impure         # adds checks.cuda when /dev/nvidiactl exists
 TORCH_TYPE_NN_CUDA=1 nix flake check --impure   # force it (=0: leave it out)
 nix develop .#cuda               # torch-bin (CUDA 13.0) shell
 nix run .#bench-cuda -- all all --seeds 5 --device cuda
+nix run .#board-cuda             # writes BOARD.CUDA.md from device runs
 ```
 
 A plain `nix flake check` is a pure evaluation, which cannot see the host, so

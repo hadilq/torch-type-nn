@@ -278,7 +278,7 @@
               > benchmarks/results/scale-batch32.jsonl.tmp
             mv benchmarks/results/scale-batch32.jsonl.tmp benchmarks/results/scale-batch32.jsonl
             ${devPython}/bin/python benchmarks/board.py --write BOARD.md
-            echo "wrote benchmarks/results/*.jsonl and BOARD.md"
+            echo "wrote benchmarks/results/*.jsonl and BOARD.md (C rows now on scale too)"
           '';
           # copy the pinned datasets to benchmarks/data
           data = script "tnn-data" "Copy the pinned datasets to benchmarks/data" copyData;
@@ -292,6 +292,25 @@
           # the board on the GPU: nix run .#bench-cuda -- all all --seeds 5 --device cuda
           bench-cuda = script "tnn-bench-cuda" "Run the benchmark board with CUDA-enabled torch" "${cudaPython}/bin/python benchmarks/bench.py \"$@\"";
           scale-cuda = script "tnn-scale-cuda" "Run the scale benchmark with CUDA-enabled torch" "${cudaPython}/bin/python benchmarks/scale.py \"$@\"";
+          board-cuda = script "tnn-board-cuda" "5-seed CUDA board + scale, write BOARD.CUDA.md" ''
+            jobs="''${TNN_JOBS:-0}"
+            mkdir -p benchmarks/results
+            ${cudaPython}/bin/python benchmarks/bench.py all \
+              cuda-type-nn,cuda-type-nn-overfit,mlp \
+              --seeds 5 --device cuda --jobs "$jobs" -v \
+              > benchmarks/results/board-cuda.jsonl.tmp
+            mv benchmarks/results/board-cuda.jsonl.tmp benchmarks/results/board-cuda.jsonl
+            ${cudaPython}/bin/python benchmarks/scale.py all \
+              --models cuda-type-nn,cuda-type-nn-overfit,mlp-16,mlp-64 \
+              --seeds 5 --device cuda --jobs "$jobs" \
+              > benchmarks/results/scale-cuda.jsonl.tmp
+            mv benchmarks/results/scale-cuda.jsonl.tmp benchmarks/results/scale-cuda.jsonl
+            ${cudaPython}/bin/python benchmarks/board.py \
+              --board benchmarks/results/board-cuda.jsonl \
+              --scale benchmarks/results/scale-cuda.jsonl \
+              --write-cuda BOARD.CUDA.md
+            echo "wrote benchmarks/results/board-cuda.jsonl scale-cuda.jsonl BOARD.CUDA.md"
+          '';
         };
 
         devShells = {
