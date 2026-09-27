@@ -19,6 +19,10 @@ On a machine with no GPU the same store runs on CPU so CI covers the
 path. Structure scaling is the threshold rule; `rule="bic"` prunes on a
 device-side pair cache.
 
+Structure is now the type-nn rule (`CudaAdapter` + `StructureScaler`):
+width, degree and depth probes, grow early / drop late, threshold or BIC.
+
+
 ```sh
 python benchmarks/bench.py xor cuda-type-nn,cuda-type-nn-overfit --device cuda
 ```

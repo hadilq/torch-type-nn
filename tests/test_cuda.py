@@ -74,3 +74,20 @@ def test_bench_cuda_models_are_cudatypenn(device):
     assert isinstance(net, CudaTypeNN) and scaler is None
     assert net.num_params() > 0
     assert net.layers[0].W.ndim == 2
+
+
+def test_scaler_is_type_nn_rule(device):
+    from torch_type_nn.cuda.adapter import CudaAdapter
+    from torch_type_nn.protocol import DEGREE, WIDTH
+    net = CudaTypeNN(4, 3, rule="threshold", seed=1, device=device)
+    net.begin(8, 3, 0.05)
+    assert net._scaler is not None
+    assert net._scaler.rule == "threshold"
+    ad = CudaAdapter(net)
+    # degree probe on every unit after begin
+    sites = ad.probe_sites(DEGREE)
+    assert sites and all(ad.probe_at(DEGREE, s) is not None for s in sites)
+    # iris-shaped net has depth > 1 so width junctions exist
+    if net.depth > 1:
+        assert ad.probe_sites(WIDTH)
+    net.end()

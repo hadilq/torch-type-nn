@@ -135,12 +135,16 @@ def as_scalable(model) -> Scalable:
     if isinstance(model, Scalable):
         return model
     from .adapters import MLPAdapter, TypeNNAdapter
+    from .cuda.adapter import CudaAdapter
+    from .cuda.model import CudaTypeNN
     from .mlp import ScalableMLP
     from .network import TypeNN
     if isinstance(model, TypeNN):
         return TypeNNAdapter(model)
     if isinstance(model, ScalableMLP):
         return MLPAdapter(model)
+    if isinstance(model, CudaTypeNN):
+        return CudaAdapter(model)
     raise TypeError(f"no scaling adapter for {type(model).__name__}; "
                     "implement torch_type_nn.protocol.Scalable")
 

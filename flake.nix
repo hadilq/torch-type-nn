@@ -307,7 +307,9 @@
             mv benchmarks/results/scale-cuda.jsonl.tmp benchmarks/results/scale-cuda.jsonl
             ${cudaPython}/bin/python benchmarks/board.py \
               --board benchmarks/results/board-cuda.jsonl \
+                      benchmarks/results/board-per-sample.jsonl \
               --scale benchmarks/results/scale-cuda.jsonl \
+                      benchmarks/results/scale-batch32.jsonl \
               --write-cuda BOARD.CUDA.md
             echo "wrote benchmarks/results/board-cuda.jsonl scale-cuda.jsonl BOARD.CUDA.md"
           '';

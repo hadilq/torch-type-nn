@@ -137,3 +137,12 @@ coordinate and an And its most-moved Or (the first one on a tie, as C's
 - **`a >= 1` with stock optimizers.** `TypeAdam` projects the assembly index
   after every step; a stock `torch.optim` optimizer did not, so `a` could
   drift below 1. The scaler now attaches `keep_invariants` to any optimizer.
+
+## CUDA backend is a ragged store, not a C-scaler port
+
+`CudaTypeNN` packs live Ors as `W (R, n_in)` and runs `X @ W.T + b`.
+That is the C memory layout on a torch device. It is **not** a line-by-line
+port of `type_nn.c` + `type_nn_scale.c`. Board gaps vs `NativeTypeNN` come
+from the scaler (width / depth / BIC pair cache), not from float32 vs
+float64 on the GEMM. Compare CUDA cells to C cells only after a scaler
+port, and never mix the 30-seed C-binary reference into `BOARD.CUDA.md`.

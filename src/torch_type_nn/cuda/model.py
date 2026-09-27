@@ -92,6 +92,17 @@ class PackedLayer:
     ptr: torch.Tensor
     x: torch.Tensor | None = None
     gin: float = 0.0
+    layer_probe: int = 0
+    layer_born: int = 0
+    unit_probe: torch.Tensor | None = None
+    unit_born: torch.Tensor | None = None
+    sx: torch.Tensor | None = None
+    sxx: torch.Tensor | None = None
+    su: torch.Tensor | None = None
+    suu: torch.Tensor | None = None
+    sxu: torch.Tensor | None = None
+    stat_ns: int = 0
+    track_stats: bool = False
 
     @property
     def n_or(self) -> int:
@@ -109,6 +120,31 @@ class PackedLayer:
     def num_params(self) -> int:
         return self.n_or * (self.n_in + 2)
 
+    def ready(self) -> "PackedLayer":
+        d, n, m = self.W.device, self.n_in, self.n_out
+        if self.unit_probe is None or self.unit_probe.numel() != m:
+            self.unit_probe = torch.zeros(m, dtype=torch.int64, device=d)
+            self.unit_born = torch.zeros(m, dtype=torch.int64, device=d)
+        if self.sx is None or self.sx.numel() != n:
+            z = torch.zeros(n, dtype=torch.float64, device=d)
+            self.sx = z.clone()
+            self.sxx = z.clone()
+            self.su = z.clone()
+            self.suu = z.clone()
+            self.sxu = z.clone()
+        return self
+
+    def reset_stats(self) -> None:
+        if self.sx is None:
+            self.ready()
+        self.sx.zero_()
+        self.sxx.zero_()
+        self.su.zero_()
+        self.suu.zero_()
+        self.sxu.zero_()
+        self.stat_ns = 0
+        self.gin = 0.0
+
     def forward_batch(self, x: torch.Tensor) -> torch.Tensor:
         """``x`` is ``(B, n_in)``; returns ``(B, n_out)``."""
         self.x = x
@@ -125,7 +161,17 @@ class PackedLayer:
                           torch.where(nneg.to(torch.int64) % 2 == 0,
                                       torch.ones_like(ell), -torch.ones_like(ell)))
         z = sgn * torch.logaddexp(ell, torch.zeros_like(ell))
-        return torch.where(nzero > 0, torch.zeros_like(z), z)
+        z = torch.where(nzero > 0, torch.zeros_like(z), z)
+        if self.track_stats:
+            self.ready()
+            self.sx += x.sum(0)
+            self.sxx += (x * x).sum(0)
+            u = x.sign() * torch.log1p(x.abs())
+            self.su += u.sum(0)
+            self.suu += (u * u).sum(0)
+            self.sxu += (x * u).sum(0)
+            self.stat_ns += int(x.shape[0])
+        return z
 
     def backward_one(self, gz: torch.Tensor, lr: float) -> torch.Tensor:
         """One-sample backward + Adam. ``gz`` is ``(n_out,)``."""
@@ -206,7 +252,7 @@ def pack_layer(n_in: int, rows: list[list[tuple]], device) -> PackedLayer:
         born=torch.tensor(born, dtype=torch.int64, device=device),
         probe=torch.tensor(probe, dtype=torch.int64, device=device),
         ptr=torch.tensor(ptr, dtype=torch.int64, device=device),
-    )
+    ).ready()
 
 
 def _dev_rows(layer: PackedLayer) -> torch.Tensor:
@@ -222,14 +268,29 @@ class CudaFitResult:
     history: list[dict] = field(default_factory=list)
 
 
-class CudaTypeNN:
-    """Ragged And-of-Ors packed for fused device matmuls."""
+class _LrHold:
+    """Optimizer stand-in so StructureScaler can read ``lr``."""
+
+    def __init__(self, lr: float) -> None:
+        self.param_groups = [{"lr": float(lr), "params": []}]
+
+    def register_step_post_hook(self, fn):
+        return None
+
+
+class CudaTypeNN(torch.nn.Module):
+    """Ragged And-of-Ors packed for fused device matmuls.
+
+    Structure is the type-nn rule via :class:`CudaAdapter` +
+    :class:`~torch_type_nn.scaling.StructureScaler` (width, degree, depth).
+    """
 
     name = "cuda"
 
     def __init__(self, in_features: int, out_features: int, *,
                  rule: str = "threshold", seed: int = 1,
                  device=None, backend: str = "cuda") -> None:
+        super().__init__()
         if backend not in ("cuda", "gpu"):
             raise ValueError(f"CudaTypeNN is the cuda backend, not {backend!r}")
         if rule not in ("threshold", "overfit", "type-nn-overfit", "bic", "type-nn"):
@@ -259,6 +320,9 @@ class CudaTypeNN:
         self._ct: torch.Tensor | None = None
         self.epoch_loss = 0.0
         self._loss_n = 0
+        self.generator = torch.Generator().manual_seed(self.seed)
+        self._scaler = None
+        self._opt = None
 
     @property
     def depth(self) -> int:
@@ -299,29 +363,39 @@ class CudaTypeNN:
                 units.append([(w, b, a, 0, 0, 0)])
             self.layers.append(pack_layer(n, units, self.device))
             n = self.out_features
-        self._grow_degree()
+        from ..scaling import StructureScaler
+        from .adapter import CudaAdapter
+        self._opt = _LrHold(self.lr)
+        self._scaler = StructureScaler(
+            CudaAdapter(self), self._opt,
+            epochs=self.epochs, steps_per_epoch=self.n_train,
+            rule=self.rule_name, generator=self.generator)
+        self._scaler.begin()
         self._begun = True
+        self._sync_counters()
 
     def end(self) -> None:
-        if self._begun:
-            self._prune()
+        if self._begun and self._scaler is not None:
+            self._scaler.end()
+            self._sync_counters()
             self.phase = DONE
 
     def epoch_end(self) -> None:
-        u = self.step_i / self.total
-        ph = _phase(u)
-        if self.phase == DONE:
-            return
-        if ph == GROW and self._residual():
-            self._grow_degree()
-        elif ph == PRUNE:
-            self._prune()
-        self.phase = ph
+        if self._scaler is not None:
+            self._scaler.epoch_end()
+            self._sync_counters()
+            self.phase = self._scaler.phase
         self._cx = self._ct = None
         self.epoch_loss = 0.0
         self._loss_n = 0
-        for layer in self.layers:
-            layer.gin = 0.0
+
+    def _sync_counters(self) -> None:
+        if self._scaler is None:
+            return
+        c = self._scaler.counters
+        self.or_add, self.or_drop = c.or_add, c.or_drop
+        self.and_add, self.and_drop = c.and_add, c.and_drop
+        self.layer_add, self.layer_drop = c.layer_add, c.layer_drop
 
     def train(self, mode: bool = True) -> "CudaTypeNN":
         self.training_mode = bool(mode)
@@ -369,6 +443,8 @@ class CudaTypeNN:
             self.epoch_loss += float(((y - t64) ** 2).mean())
             self._loss_n += 1
             self.step_i += 1
+            if self._scaler is not None:
+                self._scaler.observe(x64, y.unsqueeze(0), t64.unsqueeze(0))
         return y
 
     def _push_cache(self, x: torch.Tensor, t: torch.Tensor) -> None:
@@ -390,6 +466,54 @@ class CudaTypeNN:
 
     def _theta_band(self) -> float:
         return self.lr * (max(self.n_train, 1) ** 0.75)
+
+    def _dev_layer(self, layer: PackedLayer) -> float:
+        if layer.n_in != layer.n_out:
+            return float("inf")
+        # RMS distance from a diagonal carrier I + identity Ors
+        I = torch.eye(layer.n_in, dtype=torch.float64, device=layer.W.device)
+        # one Or per unit expected; use first Or of each unit as carrier
+        p = layer.ptr
+        s = 0.0
+        n = layer.n_out
+        for k in range(n):
+            r = int(p[k])
+            s += float((layer.W[r] - I[k]).pow(2).sum())
+            s += float((layer.b[r]) ** 2)
+            s += float((layer.a[r] - 1.0) ** 2)
+        return math.sqrt(s / max(n * (layer.n_in + 2), 1))
+
+    def _insert_identity(self, gap: int) -> None:
+        n = self.layers[gap].n_in if gap < len(self.layers) else self.out_features
+        if n != self.layers[gap].n_in:
+            return
+        units = []
+        for k in range(n):
+            w, _b, _a = _draw_or(n, self._rng, identity=False, noise=0.0)
+            w = w * self.lr
+            w[k] = w[k] + 1.0
+            units.append([(w, self.lr * _uniform(self._rng), 1.0, 0, self.step_i, 0)])
+        layer = pack_layer(n, units, self.device)
+        layer.layer_probe = 1
+        layer.layer_born = self.step_i
+        self.layers.insert(gap, layer)
+        self.layer_add += 1
+
+    def _grow_depth(self) -> None:
+        if self.depth >= self.init_depth + 3:
+            return
+        probe = next((i for i, l in enumerate(self.layers) if l.layer_probe), -1)
+        if probe >= 0:
+            age = max(self.step_i - self.layers[probe].layer_born, 1)
+            if self._dev_layer(self.layers[probe]) > self.lr * (age ** 0.75):
+                self.layers[probe].layer_probe = 0
+                self.layer_add += 1
+                probe = -1
+            else:
+                return
+        gins = [l.gin for l in self.layers]
+        gap = max(range(len(gins)), key=lambda i: gins[i]) if gins else 0
+        self._insert_identity(gap)
 
     def _grow_degree(self) -> None:
         for i, layer in enumerate(self.layers):
@@ -437,9 +561,8 @@ class CudaTypeNN:
             chunks["probe"].append(layer.probe[sl])
             extra = 0
             n_here = p[k + 1] - p[k]
-            # First CUDA scaler: one probe per unit, no runaway degree.
-            # Extra promotions stacked an And that blew up on xor (1,1).
-            if n_here < 2 and not bool((layer.probe[sl] == 1).any()):
+            # C units grow several Ors; cap only the product blow-up case.
+            if n_here < 8 and not bool((layer.probe[sl] == 1).any()):
                 w, b, a = _draw_or(layer.n_in, self._rng,
                                    identity=True, noise=self.lr)
                 z = torch.zeros(layer.n_in, dtype=torch.float64, device=dev)
@@ -470,6 +593,8 @@ class CudaTypeNN:
             t=torch.cat(chunks["t"]), born=torch.cat(chunks["born"]),
             probe=torch.cat(chunks["probe"]),
             ptr=torch.tensor(ptr, dtype=torch.int64, device=dev),
+            layer_probe=layer.layer_probe, layer_born=layer.layer_born,
+            gin=layer.gin,
         )
 
     def _index_layer(self, layer: PackedLayer, keep: torch.Tensor,
@@ -483,10 +608,19 @@ class CudaTypeNN:
             a=layer.a[keep], ma=layer.ma[keep], va=layer.va[keep],
             t=layer.t[keep], born=layer.born[keep],
             probe=torch.zeros(int(keep.sum()), dtype=torch.int64, device=dev),
+            layer_probe=layer.layer_probe, layer_born=layer.layer_born,
+            gin=layer.gin,
             ptr=torch.tensor(ptr, dtype=torch.int64, device=dev),
         )
 
     def _prune(self) -> None:
+        th = self._theta_band()
+        # drop a near-identity probe layer (not the last / task layer)
+        for i, layer in enumerate(list(self.layers[:-1])):
+            if layer.layer_probe and self._dev_layer(layer) <= th:
+                del self.layers[i]
+                self.layer_drop += 1
+                break
         if self.rule_name == "bic" and self._cx is not None:
             self._prune_bic()
             return

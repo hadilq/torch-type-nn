@@ -45,9 +45,33 @@ def test_board_cuda_markers_and_write(tmp_path):
     text = md.read_text()
     assert "OLD" not in text
     assert "cuda type-nn" in text
-    assert board.MISSING in text          # scale section empty
+    assert board.MISSING in text
     root = Path(__file__).resolve().parents[1] / "BOARD.CUDA.md"
     body = root.read_text()
     for name in ("per-sample", "pairs", "scale"):
         assert f"<!-- board:{name} -->" in body
         assert f"<!-- /board:{name} -->" in body
+
+
+def test_cuda_board_does_not_merge_30seed_reference(tmp_path):
+    """C cells on BOARD.CUDA.md must not come from the 30-seed binary file."""
+    import board
+    ref = tmp_path / "ref.jsonl"
+    res = tmp_path / "res.jsonl"
+    ref.write_text(json.dumps({
+        "impl": "type-nn", "task": "iris", "hold_mse": 0.999, "hold_mse_sd": 0.0,
+        "seeds": 30, "params": 1.0, "params_sd": 0.0, "hold_acc": None,
+        "mse": 0.999, "acc": None, "init_layers": 3, "layers": 3.0,
+        "train_s": 1.0, "us_per_infer": 1.0,
+    }) + "\n")
+    res.write_text(json.dumps({
+        "impl": "cuda-type-nn", "task": "iris", "hold_mse": 0.03,
+        "hold_mse_sd": 0.01, "seeds": 5, "params": 80.0, "params_sd": 0.0,
+        "hold_acc": None, "mse": 0.03, "acc": None, "init_layers": 3,
+        "layers": 3.0, "train_s": 1.0, "us_per_infer": 1.0,
+        "backend": "cudatypenn", "device": "cuda",
+    }) + "\n")
+    secs = board.sections_cuda([str(res)], [], str(ref))
+    text = "\n".join(secs["per-sample"])
+    assert "0.999" not in text
+    assert "cuda type-nn" in text
