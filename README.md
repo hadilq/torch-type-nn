@@ -202,7 +202,16 @@ nix flake check        # build the package, run pytest inside the build (with th
 nix build              # ./result: the installed package
 nix run .#dist         # sdist + wheel in ./dist, checked by twine
 nix run .#publish -- --repository testpypi   # upload (TestPyPI first)
+nix run .#update-deps      # VERSIONS.md; bump patch + PR inputs if a pin moved
 ```
+
+`nix run .#update-deps -- --pr` pushes `deps/update` and opens the PR (needs
+`gh` and `GH_TOKEN`). The same command is the daily cron in
+[`.github/workflows/update-deps.yml`](.github/workflows/update-deps.yml).
+Pins and the resolved nixpkgs versions are in [VERSIONS.md](VERSIONS.md).
+A type-nn rev change copies the vendored C snapshot only (`tnn_py.c` /
+`tnn_py.h` stay); the Python port is not rewritten.
+
 
 The benchmark datasets are pinned (URL + SRI hash) in
 `benchmarks/datasets.json` and never committed; see

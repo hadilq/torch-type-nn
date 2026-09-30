@@ -1,0 +1,48 @@
+# Daily: nix run .#update-deps. If an upstream pin moved, the app updates
+# flake.lock, copies the type-nn C snapshot (not the Python port), bumps the
+# patch version, rewrites VERSIONS.md, and opens a PR so check.yml can run.
+#
+# A PR opened with the default GITHUB_TOKEN does not trigger other workflows.
+# Set a repository secret DEPS_TOKEN (fine-grained PAT or GitHub App token with
+# contents and pull-requests write) so the PR event starts check.yml. Without
+# it, this workflow dispatches check.yml on the deps branch after the PR.
+name: update-deps
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: update-deps
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DEPS_TOKEN_KIND: ${{ secrets.DEPS_TOKEN != '' && 'pat' || 'github' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.DEPS_TOKEN || github.token }}
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: nix run .#update-deps
+        id: deps
+        env:
+          GH_TOKEN: ${{ secrets.DEPS_TOKEN || github.token }}
+        run: nix run .#update-deps -- --pr --github-output
+      # Default token: the PR event will not start check.yml. Dispatch it.
+      - name: Run the check pipeline on the deps branch
+        if: steps.deps.outputs.updated == 'true' && env.DEPS_TOKEN_KIND == 'github'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run check.yml --ref ${{ steps.deps.outputs.branch }}

@@ -261,6 +261,12 @@
           '';
           # upload to PyPI (or TestPyPI with: nix run .#publish -- --repository testpypi)
           publish = script "tnn-publish" "Upload ./dist with twine" "${devPython}/bin/python -m twine upload \"$@\" dist/*";
+          # daily: .github/workflows/update-deps.yml runs this. Bumps the patch
+          # version and opens a PR only when a flake pin moved.
+          update-deps = script "tnn-update-deps" "Check upstream pins, bump the patch version, write VERSIONS.md" ''
+            export PATH=${lib.makeBinPath [ pkgs.python3 pkgs.gh pkgs.git ]}:$PATH
+            python3 ${./scripts/update_deps.py} "$@"
+          '';
           # the board: nix run .#bench -- iris type-nn --seeds 5
           bench = script "tnn-bench" "Run the benchmark board (benchmarks/bench.py)" "${devPython}/bin/python benchmarks/bench.py \"$@\"";
           # markdown board vs the C reference: nix run .#board -- benchmarks/out/*.jsonl
