@@ -171,6 +171,47 @@
             })
             else cprev.nccl;
         };
+        # nixpkgs' multiple-outputs.sh fixup indirect-expands a joined output
+        # name ("include lib", then "include stubs") and bash exits. Replacing
+        # the hook dropped lib outputs from `out`, so cuda-bindings then linked
+        # against an empty cuda-redist/lib64. Override the function instead:
+        # propagate each output that exists, and never expand a joined name.
+        fixMultiout = cfinal: cprev:
+          lib.mapAttrs (name: pkg:
+            if lib.isDerivation pkg && pkg ? overrideAttrs then
+              pkg.overrideAttrs (old: {
+                preFixup = (old.preFixup or "") + ''
+                  _multioutPropagateDev() {
+                    local dest="''${outputDev:-out}"
+                    [[ -n "''${!dest:-}" ]] || return 0
+                    mkdir -p "''${!dest}/nix-support"
+                    local o
+                    for o in include lib static stubs bin; do
+                      if [[ -n "''${!o:-}" && "$o" != "$dest" ]]; then
+                        echo -n " ''${!o}" >> "''${!dest}/nix-support/propagated-build-inputs"
+                      fi
+                    done
+                  }
+                '';
+              })
+            else pkg
+          ) cprev;
+        # libcusparse's auto-patchelf search path gets libnvjitlink.dev, but
+        # libnvJitLink.so.13 is in the lib output. Do not attach that output to
+        # every package: libnvjitlink would depend on itself and torch's
+        # requiredPythonModules recurses. Only libcusparse needs it here.
+        fixJitlink = cfinal: cprev: {
+          libcusparse = cprev.libcusparse.overrideAttrs (old: {
+            autoPatchelfSearchPath = (old.autoPatchelfSearchPath or [ ]) ++ [
+              (lib.getLib cprev.libnvjitlink)
+            ];
+            preFixup = (old.preFixup or "") + ''
+              if declare -F addAutoPatchelfSearchPath >/dev/null; then
+                addAutoPatchelfSearchPath ${lib.getLib cprev.libnvjitlink}/lib
+              fi
+            '';
+          });
+        };
         cudaPkgs = import nixpkgs {
           inherit system;
           config = { allowUnfree = true; cudaSupport = true; };
@@ -180,7 +221,7 @@
               # one set (or the `cudaPackages` alias) leaves the stale NCCL
               # reachable through others (libnvshmem -> openmpi -> ucc).
               _cuda = prev._cuda.extend (_: prevAttrs: {
-                extensions = prevAttrs.extensions ++ [ fixNccl ];
+                extensions = prevAttrs.extensions ++ [ fixNccl fixMultiout fixJitlink ];
               });
               cudaPackages = final.${cudaSet};
             })
