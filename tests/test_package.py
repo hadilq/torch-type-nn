@@ -22,6 +22,10 @@ def test_wheel_config_does_not_force_include_native_c():
     hatch = cfg.get("tool", {}).get("hatch", {}).get("build", {})
     wheel = hatch.get("targets", {}).get("wheel", {})
     assert "force-include" not in wheel
-    assert (ROOT / "src" / "torch_type_nn" / "native" / "c" / "tnn_py.c").is_file()
-    assert (ROOT / "src" / "torch_type_nn" / "native" / "c" / "ORIGIN").is_file()
     assert not (ROOT / "csrc").exists()
+    # publish.yml checks the sdist shipped these, then deletes src so pytest
+    # imports the installed wheel rather than the unpacked sources.
+    native = ROOT / "src" / "torch_type_nn" / "native" / "c"
+    if (ROOT / "src").is_dir():
+        assert (native / "tnn_py.c").is_file()
+        assert (native / "ORIGIN").is_file()

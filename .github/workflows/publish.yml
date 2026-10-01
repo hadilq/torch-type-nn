@@ -62,6 +62,11 @@ jobs:
       - name: Run the tests from the sdist
         run: |
           mkdir sdist && tar xzf dist/*.tar.gz -C sdist --strip-components=1
+          # suite reads these from the tree; fail here if the sdist dropped them
+          test -f sdist/src/torch_type_nn/native/c/tnn_py.c
+          test -f sdist/src/torch_type_nn/native/c/ORIGIN
+          test -f sdist/BOARD.md
+          test -f sdist/BOARD.CUDA.md
           cd sdist && rm -rf src          # import the installed wheel, not the sources
           python -m pytest -q -p no:cacheprovider
 
