@@ -14,11 +14,11 @@ rewritten by the updater.
 
 | Component | Kind | Pin | Locked | Upstream |
 | --- | --- | --- | --- | --- |
-| torch-type-nn | package | `pyproject.toml` | `0.1.0.dev0` | — |
-| nixpkgs | flake input | `nixos-unstable` | `6774f7bc2537` (2026-09-22) | — |
-| flake-utils | flake input | `github:numtide/flake-utils` | `11707dc2f618` (2024-11-13) | — |
-| type-nn-c | flake input, vendored C | `github:hadilq/type-nn` | `7333bf79c336` (2026-09-22) | — |
-| systems | transitive (flake-utils) | `github:nix-systems/default` | `da67096a3b9b` (2023-04-09) | — |
+| torch-type-nn | package | `pyproject.toml` | `0.1.1.dev0` | — |
+| nixpkgs | flake input | `nixos-unstable` | `c59305bab206` (2026-10-01) | `c59305bab206` (matches pin) |
+| flake-utils | flake input | `github:numtide/flake-utils` | `11707dc2f618` (2024-11-13) | `11707dc2f618` (matches pin) |
+| type-nn-c | flake input, vendored C | `github:hadilq/type-nn` | `7333bf79c336` (2026-09-22) | `7333bf79c336` (matches pin) |
+| systems | transitive (flake-utils) | `github:nix-systems/default` | `da67096a3b9b` (2023-04-09) | `da67096a3b9b` (matches pin) |
 
 Resolved from the locked nixpkgs (the versions `nix develop` and
 `nix flake check` actually build). A missing cell means the eval did
@@ -26,13 +26,13 @@ not run (no Nix, or an unfree package refused).
 
 | Component | Kind | Declared | Resolved |
 | --- | --- | --- | --- |
-| python | nixpkgs | interpreter (flake uses python312) | `—` |
-| torch | nixpkgs | declared torch>=2.2 | `—` |
-| numpy | nixpkgs | dev extra | `—` |
-| pytest | nixpkgs | declared pytest>=8 | `—` |
-| hatchling | nixpkgs | build-system >=1.24 | `—` |
-| ruff | nixpkgs | lint, nix flake check | `—` |
-| torch-bin | nixpkgs | CUDA shell / checks (unfree) | `—` |
+| python | nixpkgs | interpreter (flake uses python312) | `3.12.14` |
+| torch | nixpkgs | declared torch>=2.2 | `2.13.0` |
+| numpy | nixpkgs | dev extra | `2.5.2` |
+| pytest | nixpkgs | declared pytest>=8 | `9.1.1` |
+| hatchling | nixpkgs | build-system >=1.24 | `1.31.0` |
+| ruff | nixpkgs | lint, nix flake check | `0.16.8` |
+| torch-bin | nixpkgs | CUDA shell / checks (unfree) | `2.13.0` |
 
 Benchmark datasets (`benchmarks/datasets.json`). Listed, not bumped:
 a new upstream file is a different hash and not a drop-in.
