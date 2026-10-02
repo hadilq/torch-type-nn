@@ -6,7 +6,7 @@ grows and prunes its own width, degree and depth while it trains. The
 design is explained in
 [Train the knowledge](https://hadilq.com/posts/train-the-knowledge/).
 
-> Status: alpha (0.1.1.dev0). Forward, gradients and the per-Or Adam step
+> Status: alpha (0.1.0.dev0). Forward, gradients and the per-Or Adam step
 > agree with the C reference to 1e-12, and both C scaling rules have exact
 > ports on the board (see [Validation](#validation)). Deliberate differences
 > from C are listed in [docs/DIFFERENCES.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/DIFFERENCES.md); the audit

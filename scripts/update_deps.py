@@ -78,7 +78,14 @@ def run(cmd: list[str], *, cwd: Path, check: bool = True, env: dict | None = Non
     merged = os.environ.copy()
     if env:
         merged.update(env)
-    return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True, env=merged)
+    proc = subprocess.run(cmd, cwd=cwd, check=False, text=True, capture_output=True, env=merged)
+    if check and proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout, file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr, file=sys.stderr)
+        sys.exit(f"update-deps: {' '.join(cmd)} failed ({proc.returncode})")
+    return proc
 
 
 def bump_patch(version: str) -> str:
@@ -328,21 +335,47 @@ def open_pr(root: Path, title: str, body: str) -> None:
         return
     git(["commit", "-m", title], root)
     git(["push", "--force-with-lease", "-u", "origin", BRANCH], root)
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    repo_args = ["--repo", repo] if repo else []
     existing = run(
-        ["gh", "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number", "--jq", ".[0].number"],
+        ["gh", "pr", "list", *repo_args, "--head", BRANCH, "--state", "open",
+         "--json", "number", "--jq", ".[0].number"],
         cwd=root, check=False,
     )
     number = existing.stdout.strip()
     if number:
-        run(["gh", "pr", "edit", number, "--title", title, "--body", body], cwd=root)
+        run(["gh", "pr", "edit", *repo_args, number, "--title", title, "--body", body], cwd=root)
         print(f"update-deps: updated PR #{number}")
-    else:
-        created = run(
-            ["gh", "pr", "create", "--base", default, "--head", BRANCH,
-             "--title", title, "--body", body],
-            cwd=root,
-        )
+        return
+    created = run(
+        ["gh", "pr", "create", *repo_args, "--base", default, "--head", BRANCH,
+         "--title", title, "--body", body],
+        cwd=root, check=False,
+    )
+    if created.returncode == 0:
         print(created.stdout.strip())
+        return
+    detail = (created.stderr or created.stdout or "").strip()
+    print(detail, file=sys.stderr)
+    # A previous run may have opened the PR after this process listed none.
+    again = run(
+        ["gh", "pr", "list", *repo_args, "--head", BRANCH, "--state", "open",
+         "--json", "number", "--jq", ".[0].number"],
+        cwd=root, check=False,
+    )
+    if again.stdout.strip() and "already exists" in detail.lower():
+        run(["gh", "pr", "edit", *repo_args, again.stdout.strip(), "--title", title, "--body", body], cwd=root)
+        print(f"update-deps: updated PR #{again.stdout.strip()}")
+        return
+    hint = ""
+    if "resource not accessible" in detail.lower() or "403" in detail:
+        hint = (
+            "\nupdate-deps: the token cannot open pull requests. On the "
+            "update-deps environment, set DEPS_TOKEN to a fine-grained PAT "
+            "with Contents and Pull requests write, or grant this workflow "
+            "pull-requests: write. Do not name the secret GITHUB_TOKEN."
+        )
+    sys.exit(f"update-deps: gh pr create failed ({created.returncode}). {detail}{hint}")
 
 
 def write_output(updated: bool, version: str) -> None:

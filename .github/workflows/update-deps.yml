@@ -3,9 +3,10 @@
 # patch version, rewrites VERSIONS.md, and opens a PR so check.yml can run.
 #
 # A PR opened with the default GITHUB_TOKEN does not trigger other workflows.
-# Set a repository secret DEPS_TOKEN (fine-grained PAT or GitHub App token with
-# contents and pull-requests write) so the PR event starts check.yml. Without
-# it, this workflow dispatches check.yml on the deps branch after the PR.
+# Optional: environment secret DEPS_TOKEN (fine-grained PAT or GitHub App
+# token, contents + pull-requests write) on the update-deps environment.
+# Do not create a secret named GITHUB_TOKEN or GH_TOKEN. Without DEPS_TOKEN
+# this job uses github.token and dispatches check.yml on the deps branch.
 name: update-deps
 
 on:
@@ -26,6 +27,7 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    environment: update-deps
     env:
       DEPS_TOKEN_KIND: ${{ secrets.DEPS_TOKEN != '' && 'pat' || 'github' }}
     steps:
