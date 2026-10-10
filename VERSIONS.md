@@ -14,11 +14,11 @@ rewritten by the updater.
 
 | Component | Kind | Pin | Locked | Upstream |
 | --- | --- | --- | --- | --- |
-| torch-type-nn | package | `pyproject.toml` | `0.1.1.dev0` | — |
-| nixpkgs | flake input | `nixos-unstable` | `c59305bab206` (2026-10-01) | `c59305bab206` (matches pin) |
+| torch-type-nn | package | `pyproject.toml` | `0.1.2.dev0` | — |
+| nixpkgs | flake input | `nixos-unstable` | `e7439b6b14ad` (2026-10-08) | `e7439b6b14ad` (matches pin) |
 | flake-utils | flake input | `github:numtide/flake-utils` | `11707dc2f618` (2024-11-13) | `11707dc2f618` (matches pin) |
 | type-nn-c | flake input, vendored C | `github:hadilq/type-nn` | `7333bf79c336` (2026-09-22) | `7333bf79c336` (matches pin) |
-| systems | transitive (flake-utils) | `github:nix-systems/default` | `da67096a3b9b` (2023-04-09) | `da67096a3b9b` (matches pin) |
+| systems | transitive (flake-utils) | `github:nix-systems/default` | `da67096a3b9b` (2023-04-09) | `d36eeed142f8` |
 
 Resolved from the locked nixpkgs (the versions `nix develop` and
 `nix flake check` actually build). A missing cell means the eval did
@@ -26,12 +26,12 @@ not run (no Nix, or an unfree package refused).
 
 | Component | Kind | Declared | Resolved |
 | --- | --- | --- | --- |
-| python | nixpkgs | interpreter (flake uses python312) | `3.12.14` |
+| python | nixpkgs | interpreter (flake uses python312) | `3.12.15` |
 | torch | nixpkgs | declared torch>=2.2 | `2.13.0` |
 | numpy | nixpkgs | dev extra | `2.5.2` |
 | pytest | nixpkgs | declared pytest>=8 | `9.1.1` |
 | hatchling | nixpkgs | build-system >=1.24 | `1.31.0` |
-| ruff | nixpkgs | lint, nix flake check | `0.16.8` |
+| ruff | nixpkgs | lint, nix flake check | `0.16.10` |
 | torch-bin | nixpkgs | CUDA shell / checks (unfree) | `2.13.0` |
 
 Benchmark datasets (`benchmarks/datasets.json`). Listed, not bumped:
