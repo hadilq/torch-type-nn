@@ -22,6 +22,7 @@ from .layer import AndOr
 from .mlp import ScalableMLP, TrackedLinear
 from .native import NativeTypeNN
 from .network import TypeNN, birth_depth
+from .graph import GraphTypeNN, Node, GraphScaler
 from .optim import TypeAdam, keep_invariants
 from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable, Trial
 from .scaling import StructureScaler
@@ -33,7 +34,7 @@ except PackageNotFoundError:  # running from a checkout without install
     __version__ = "0.0.0+local"
 
 __all__ = [
-    "AndOr", "TypeNN", "TypeAdam", "keep_invariants", "StructureScaler", "fit", "FitResult",
+    "AndOr", "TypeNN", "GraphTypeNN", "Node", "GraphScaler", "TypeAdam", "keep_invariants", "StructureScaler", "fit", "FitResult",
     "mse_loss",
     "birth_depth", "and_or", "readout", "functional", "__version__",
     "Scalable", "Item", "Trial", "EditContext", "WIDTH", "DEGREE", "DEPTH",
