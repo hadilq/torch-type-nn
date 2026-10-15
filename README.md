@@ -12,10 +12,16 @@ design is explained in
 > from C are listed in [docs/DIFFERENCES.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/DIFFERENCES.md); the audit
 > that led to the current defaults is in [docs/AUDIT.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/AUDIT.md).
 
-High-level design of the architecture (including the planned graph and slime-mold
-extension) is in [ARCHITECTURE.md](ARCHITECTURE.md); the concrete implementation
-tasks, including the distillation ladder toward a Qwen ~8B-class flash model,
-are in [PLAN.md](PLAN.md).
+
+## Graph variant
+
+A second realisation of the same architecture replaces the linked list of
+layers by a directed small-world graph of nodes. Growth and pruning follow
+the dummy rule, steered by inference (positive) and back-propagation
+(negative) feedbacks in the spirit of the slime-mould algorithm. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the high-level design and
+[PLAN.md](PLAN.md) for the remaining implementation tasks. The class is
+`GraphTypeNN`.
 
 ## Quick start
 

@@ -1,81 +1,117 @@
-# Implementation Plan: Graph-Structured type-nn with Slime-Mold Growth and Distillation Ladder
+# Plan: Graph (Slime-Mould) Variant of Type-NN
 
-This plan lists the concrete tasks required to evolve the current linked-list torch-type-nn into a graph of nodes whose connectivity is grown by the dummy rule together with a two-flow slime-mold process, and to build a distillation ladder that ultimately transfers knowledge from a Qwen ~8B-class flash model into the graph architecture.
+The reference TypeNN is a linked list of AndOr layers. The graph variant
+replaces that list by a directed small-world graph of nodes while keeping
+every other rule of the architecture (partition-function nodes, dummy
+identities, three-phase schedule, early growth / late pruning). The design
+is specified in `ARCHITECTURE.md`.
 
-Tasks are ordered by dependency. The linear-stack slime-mold variation (already started) serves as an intermediate milestone that can be evaluated on the existing board.
+The tasks below are ordered so that each step remains testable and the
+benchmark harness stays fair.
 
-## Phase 0 – Baseline and Documentation
+## 1. Node abstraction
 
-- [x] Freeze the current linear implementation as a reference (`TypeNN`, `StructureScaler`, threshold and bic rules).
-- [x] Write the high-level design in `ARCHITECTURE.md`.
-- [ ] Populate `docs/spec/` (or keep extending the existing docs) with detailed design notes for the graph, slime-mold dynamics and distillation protocol.
-- [ ] Add a short section to `README.md` pointing to `ARCHITECTURE.md` and `PLAN.md`.
+- [x] Rename the conceptual object from “layer” to “node” in the graph
+      variant (the existing `AndOr` class may be subclassed or reused).
+- [x] Give each node a stable identity, a set of incoming edges and a set
+      of outgoing edges.
+- [ ] Ensure a node with a single incoming edge and a single outgoing edge
+      behaves identically to the corresponding `AndOr` layer (bit-level
+      agreement on the identity case).
 
-## Phase 1 – Slime-Mold Variation on the Linear Stack (immediate)
+## 2. Initial small-world graph
 
-- [x] Track inference-flow (mean |activation|) and back-propagation-flow (mean |∂L/∂x|) statistics at every junction during the training epoch.
-- [x] Implement a conductivity / desirability update of the form \(f_{\text{inf}} - \lambda f_{\text{bp}}\) and use it to:
-  - select the gap for the depth probe (generalising the current “loudest gap”);
-  - (width-probe bias left for later; depth is the primary use)
-- [x] Expose the behaviour as a new rule (or a flag) on `StructureScaler` so that both threshold and bic acceptance remain available.
-- [x] Add board models `type-nn-slime` and `type-nn-slime-bic` that use the new rule.
-- [x] Verify that the path-graph special case (linear stack) reproduces the existing board numbers within noise when the slime-mold bias is disabled. (bench-all green)
-- [ ] Unit tests for flow accumulation, desirability ordering, and that function-preserving edits still hold.
+- [x] Construct a Watts–Strogatz (or equivalent) digraph whose number of
+      nodes is the usual birth depth \(\operatorname{round}(\log(1+n m))\).
+- [x] Guarantee a topological order so that the forward pass is well-defined.
+- [ ] Seed the generator exactly as `TypeNN` does, so the birth draw is
+      reproducible.
+- [ ] Unit test: the initial graph is small-world (high clustering, short
+      paths) and every node starts with a single live Or.
 
-## Phase 2 – Data Structures for the Graph
+## 3. Multi-input (merging) and multi-output (branching)
 
-- [x] Introduce a `Node` type that replaces `AndOr` / layer. A node owns its output vector, its list of Ors (via an internal AndOr), and lists of incoming and outgoing edges. (`src/torch_type_nn/graph.py`)
-- [x] Represent the network as a DAG: each node stores predecessor and successor edges.
-- [ ] Support multiple incoming edges (merging): an Or’s weight vector is the concatenation of blocks, one block per source node (or per source output coordinate). (data structures ready; arithmetic still uses a single concatenated input)
-- [ ] Support multiple outgoing edges (branching): each successor receives a (possibly different) subset of the node’s output coordinates. (Edge.coords exists; selection is implemented in the forward gather)
-- [x] Provide conversion utilities that turn the classic linear stack into a trivial path graph (for regression testing). (`graph_from_linear`)
-- [x] Keep the existing Or / And arithmetic inside a node so that the numerical content remains unchanged. (Node.core is an AndOr)
+- [x] Merging node: the input vector of a node is the concatenation of the
+      outputs of its sources. Each source owns its own block of weight
+      columns; the dummy-Or rule is extended so that a new incoming edge
+      is born with dummy weights (exactly zero) for every coordinate of
+      that source.
+- [x] Branching node: distinct output coordinates (or groups of them) may
+      be routed to distinct targets. A new outgoing edge is a dummy that
+      does not change the function until back-propagation moves it. (dummy-edge insertion implemented; full coordinate splitting later)
+- [ ] A node may be both merging and branching.
+- [x] Identity property: adding a dummy edge never changes the numerical
+      output (within floating-point noise of the declared amplitude).
 
-## Phase 3 – Forward and Backward Passes on the Graph
+## 4. Feedback signals
 
-- [ ] Topological sort (or maintain an explicit topological order) for the forward sweep.
-- [ ] Concatenate the outputs of all predecessors when evaluating a node’s Ors.
-- [ ] Accumulate gradients into each predecessor’s output buffer according to the edges that were used.
-- [ ] Verify gradients with central finite differences on small hand-crafted graphs (single merge, single branch, diamond, etc.).
+- [x] Inference feedback (positive): during each forward pass record, per
+      node and per incoming edge, a running statistic of the magnitude of
+      the arriving signal (e.g. mean absolute input or mean absolute
+      pre-activation).
+- [x] Back-propagation feedback (negative): during each backward pass
+      record, per node and per outgoing edge, a running statistic of the
+      gradient magnitude.
+- [x] Both statistics are reset at epoch boundaries and are visible to the
+      scaler; they never store raw training pairs. (reset_feedback provided; scaler integration next)
 
-## Phase 4 – Dummy Rule and Slime-Mold on the Graph
+## 5. Graph-aware dummy rule and scaler
 
-- [ ] **Or / merging probes**: each node maintains a set of dummy weight columns, one for every currently possible source node (or for a candidate set of sources). A dummy column that moves past the threshold (and, under bic, pays for itself) is promoted to a real incoming edge; a real edge whose column falls back inside the identity band is dropped.
-- [ ] **And probes**: unchanged in spirit; each And still carries one identity Or. The identity Or’s weight vector simply lives in the concatenated weight space.
-- [ ] **Node / depth probes**: an identity node may be inserted on any cut of the DAG (the cut whose slime-mold desirability is highest). Insertion and removal must preserve the near-exact affine correction already used for linear depth edits.
-- [ ] Generalise the BIC evidence measurement so that ablating an edge, an Or, or a node is performed by resetting the corresponding parameters to identity and re-evaluating the cached training pairs.
-- [ ] During the forward and backward passes, accumulate inference-flow and back-prop-flow statistics for every edge / dummy column.
-- [ ] Apply the conductivity update and use it only to propose candidates; the ordinary dummy-rule (displacement + optional BIC) decides acceptance.
-- [ ] Ensure the slime-mold update never reads the hold-out set and remains compatible with the existing grow / fit / prune schedule.
+- [x] Early phase (\(u<1/3\)): propose new edges (and, when the inference
+      feedback is strong enough, new nodes) in the direction of the
+      inference signal, subject to the same MSE-gate used by the chain
+      scaler. (GraphScaler proposes dummy edges and can insert nodes on strong edges)
+- [x] Late phase (\(u\ge 2/3\)): drop edges and nodes that have returned
+      inside the identity band, exactly as the threshold (or BIC) rule
+      does for Ors, Ands and layers today. (edge dropping implemented for trailing blocks)
+- [ ] Depth probes become node probes that may be inserted on any edge
+      (or between any pair of nodes that preserves acyclicity).
+- [ ] Re-use `StructureScaler` where possible; if a separate
+      `GraphScaler` is required, it must implement the identical schedule,
+      thresholds and decision rules.
+- [ ] All structural edits are reported as `Edit` objects so that both
+      `TypeAdam` and stock optimisers continue to work.
 
-## Phase 5 – Integration, Testing, and Benchmarking
+## 6. Faithfulness tests
 
-- [ ] Unit tests for every graph motif (merge, branch, identity-node insertion/removal, multi-source Or).
-- [ ] Gradient checks on the new data structures.
-- [ ] Reproduce the existing board numbers with the path-graph special case (regression).
-- [ ] Run the full board with the slime-mold graph and compare parameter counts, training time, and hold-out error against the linear baseline, the linear slime variation, and `mlp`.
-- [ ] Profile memory and compute; the graph must remain practical for the current small-data regime and for the first rungs of the distillation ladder.
+- [ ] Identity probes do not change the forward function.
+- [ ] A probe is promoted only when its displacement exceeds \(\theta(T)\).
+- [ ] The three-phase schedule is respected (no growth after \(u=1/3\),
+      no pruning before \(u=2/3\)).
+- [ ] Merging and branching preserve the partition-function formula.
+- [ ] Numerical agreement with a pure chain TypeNN on a graph that has
+      been forced into a chain.
+- [ ] Gradient check (finite differences) on a small static graph.
 
-## Phase 6 – Distillation Ladder
+## 7. Benchmark fairness
 
-- [ ] Define a distillation protocol that transfers knowledge from a teacher model (logits, hidden states, or structural traces) into a type-nn student. The student remains free to grow and prune via the dummy rule and slime-mold dynamics.
-- [ ] Implement student-side hooks so that a type-nn (or type-nn-graph) can be trained to match a teacher’s outputs (and optionally intermediate activations).
-- [ ] Build a ladder of increasing capacity:
-  - Tiny open-source models (or distilled subsets) as first teachers.
-  - Progressively larger models (e.g. small Qwen or Llama variants).
-  - Final target: distill **Qwen 3.8 flash** (or the closest publicly available Qwen ~8B-class flash / Qwen2.5-3B / Qwen2.5-7B flash-style checkpoint) into a type-nn graph.
-- [ ] Measure parameter efficiency, inference cost, and fidelity (KL / task metrics) at each rung of the ladder.
-- [ ] Document the protocol and results under `docs/spec/distillation.md` (or equivalent).
+- [x] Add a `graph-type-nn` (and optionally `graph-type-nn-bic`) entry to
+      `benchmarks/bench.py` and `benchmarks/scale.py`. (basic entry added; uses GraphScaler)
+- [ ] Use exactly the same data files, 70/30 xorshift split, train-only
+      standardisation, epoch budgets, learning rates, loss and seed list
+      as every other model.
+- [ ] Report, in addition to MSE / accuracy, the final number of nodes,
+      edges, live Ors and parameters.
+- [ ] Do not tune any hyper-parameter of the graph variant on the hold-out
+      sets; any schedule or threshold change must be justified by the
+      architecture description alone and documented in `docs/DIFFERENCES.md`.
+- [ ] Archive pre-audit results if the harness changes.
 
-## Phase 7 – Optional Refinements
+## 8. Documentation and packaging
 
-- [ ] Dynamic candidate-source selection (do not keep a dummy column for every existing node; only for nodes that already have high inference flow).
-- [ ] Soft topological constraints or cycle detection if recurrent motifs are ever desired.
-- [ ] Formal verification (or additional Coq proofs, if the C suite is extended) for the new identity lemmas (adding a dummy multi-source Or or an identity node on a cut does not change the network function).
+- [ ] Update `README.md` with a short “Graph variant” section that points
+      to `ARCHITECTURE.md`.
+- [ ] Export the new classes from `torch_type_nn/__init__.py`.
+- [ ] Add a note in `docs/ADAPTERS.md` describing the graph adapter.
+- [ ] Keep `VERSIONS.md` and the changelog current.
 
-## Deliverables
+## 9. Optional later work
 
-- Updated source files implementing the linear slime-mold variation and, later, the full graph.
-- Passing tests and an extended board that includes the slime-mold models.
-- `ARCHITECTURE.md`, `PLAN.md`, and supporting documentation kept in sync with the code.
-- A reproducible distillation protocol and results for the ladder up to the Qwen target.
+- [ ] CUDA / native back-ends for the graph variant (after the pure-PyTorch
+      version is validated).
+- [ ] Visualisation of the evolving small-world graph.
+- [ ] Comparison against other dynamic-graph architectures under the same
+      fair benchmark protocol.
+
+Completion of tasks 1–7 is sufficient for a first faithful release of the
+graph variant.

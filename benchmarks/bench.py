@@ -12,8 +12,6 @@ Models (``MODELS``; every one goes through the same ``train`` loop):
 
     type-nn              the architecture: threshold rule, width on every junction
     type-nn-bic          the same with the BIC prior (rule="bic")
-    type-nn-slime        threshold rule with slime-mold depth-probe placement
-    type-nn-slime-bic    BIC rule with slime-mold depth-probe placement
     ref-type-nn          C's type-nn exactly: rule="bic", width_through_depth_probe=False
     ref-type-nn-overfit  C's type-nn-overfit exactly: threshold rule, no width through the probe
     c-type-nn            NativeTypeNN wrapping C type-nn (BIC); board row "C type-nn"
@@ -199,8 +197,6 @@ class MLP(nn.Module):
 MODELS = {
     "type-nn": ("type-nn", "threshold", True),
     "type-nn-bic": ("type-nn", "bic", True),
-    "type-nn-slime": ("type-nn", "slime-threshold", True),
-    "type-nn-slime-bic": ("type-nn", "slime-bic", True),
     "ref-type-nn": ("type-nn", "bic", False),
     "ref-type-nn-overfit": ("type-nn", "threshold", False),
     "c-type-nn": ("c", "bic", None),
@@ -209,6 +205,7 @@ MODELS = {
     "cuda-type-nn-overfit": ("cuda", "threshold", None),
     "mlp": ("mlp", None, None),
     "mlp-scaled": ("mlp-scaled", "threshold", True),
+    "graph-type-nn": ("graph", "threshold", True),
 }
 
 # JSON impl id written by aggregate (board.py keys).
@@ -238,6 +235,13 @@ def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE)
         model = ScalableMLP(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
         target = model
+    elif family == "graph":
+        from torch_type_nn import GraphTypeNN, GraphScaler
+        model = GraphTypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        scaler = GraphScaler(model, opt, epochs=epochs, steps_per_epoch=steps, rule=rule)
+        scaler.begin()
+        return model, opt, scaler
     else:
         model = MLP(n_in, n_out, seed).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
