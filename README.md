@@ -12,6 +12,11 @@ design is explained in
 > from C are listed in [docs/DIFFERENCES.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/DIFFERENCES.md); the audit
 > that led to the current defaults is in [docs/AUDIT.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/AUDIT.md).
 
+High-level design of the architecture (including the planned graph and slime-mold
+extension) is in [ARCHITECTURE.md](ARCHITECTURE.md); the concrete implementation
+tasks, including the distillation ladder toward a Qwen ~8B-class flash model,
+are in [PLAN.md](PLAN.md).
+
 ## Quick start
 
 ```python

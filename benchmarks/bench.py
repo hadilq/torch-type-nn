@@ -12,6 +12,8 @@ Models (``MODELS``; every one goes through the same ``train`` loop):
 
     type-nn              the architecture: threshold rule, width on every junction
     type-nn-bic          the same with the BIC prior (rule="bic")
+    type-nn-slime        threshold rule with slime-mold depth-probe placement
+    type-nn-slime-bic    BIC rule with slime-mold depth-probe placement
     ref-type-nn          C's type-nn exactly: rule="bic", width_through_depth_probe=False
     ref-type-nn-overfit  C's type-nn-overfit exactly: threshold rule, no width through the probe
     c-type-nn            NativeTypeNN wrapping C type-nn (BIC); board row "C type-nn"
@@ -197,6 +199,8 @@ class MLP(nn.Module):
 MODELS = {
     "type-nn": ("type-nn", "threshold", True),
     "type-nn-bic": ("type-nn", "bic", True),
+    "type-nn-slime": ("type-nn", "slime-threshold", True),
+    "type-nn-slime-bic": ("type-nn", "slime-bic", True),
     "ref-type-nn": ("type-nn", "bic", False),
     "ref-type-nn-overfit": ("type-nn", "threshold", False),
     "c-type-nn": ("c", "bic", None),

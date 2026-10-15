@@ -96,6 +96,8 @@ class AndOr(nn.Module):
         for name in _STAT_BUFFERS:
             self.register_buffer(name, torch.zeros(n, **f), persistent=False)
         self.register_buffer("stat_gin", torch.zeros((), **f), persistent=False)
+        # mean |x| (inference flow)
+        self.register_buffer("stat_inf", torch.zeros((), **f), persistent=False)
         self.register_buffer("stat_ns", torch.zeros((), **f), persistent=False)
         self.mask.fill_(True)
         self.reset_parameters(generator)
@@ -159,7 +161,7 @@ class AndOr(nn.Module):
     @torch.no_grad()
     def reset_stats(self) -> None:
         """Clear the epoch statistics of the layer input."""
-        for name in (*_STAT_BUFFERS, "stat_gin", "stat_ns"):
+        for name in (*_STAT_BUFFERS, "stat_gin", "stat_inf", "stat_ns"):
             getattr(self, name).zero_()
 
     def _observe(self, x: torch.Tensor) -> torch.Tensor:
@@ -175,6 +177,7 @@ class AndOr(nn.Module):
             self.stat_su.add_(u.sum(0))
             self.stat_suu.add_((u * u).sum(0))
             self.stat_sxu.add_((xf * u).sum(0))
+            self.stat_inf.add_(xf.abs().mean())  # inference flow: mean absolute activation
             self.stat_ns.add_(xf.shape[0])
         if not x.requires_grad:
             x = x.detach().requires_grad_(True)

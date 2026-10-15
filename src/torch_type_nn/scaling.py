@@ -82,7 +82,7 @@ __all__ = ["StructureScaler", "Counters", "phase_at", "as_scalable", "RULES",
            "GROW", "FIT", "PRUNE", "DONE"]
 
 GROW, FIT, PRUNE, DONE = 0, 1, 2, 3
-RULES = ("threshold", "bic")
+RULES = ("threshold", "bic", "slime-threshold", "slime-bic")
 
 
 def phase_at(u: float) -> int:
@@ -160,18 +160,31 @@ class StructureScaler:
             optimizer steps.
         rule: ``"threshold"`` (default: decisions from back-prop displacement
             only) or ``"bic"`` (adds the measured BIC prior); see the module docs.
+            ``"slime-threshold"`` and ``"slime-bic"`` use the same acceptance
+            rules but select the depth-probe gap by slime-mold desirability
+            (inference flow minus weighted back-propagation flow).
         eval_batch: chunk size when the epoch's pairs are re-evaluated (``bic``).
         generator: RNG for probe initialisation; default ``model.generator``.
+        slime_lambda: trade-off weight for back-propagation flow under the
+            slime rules (default 1.0).
     """
 
     def __init__(self, model, optimizer: torch.optim.Optimizer, *, epochs: int,
                  steps_per_epoch: int, rule: str = "threshold", eval_batch: int = 65536,
-                 generator: torch.Generator | None = None) -> None:
+                 generator: torch.Generator | None = None, slime_lambda: float = 1.0) -> None:
         if rule not in RULES:
             raise ValueError(f"rule must be one of {RULES}, not {rule!r}")
         self.rule = rule
+        self.slime = rule.startswith("slime")
+        self.slime_lambda = float(slime_lambda)
+        # normalise the decision rule used by the rest of the scaler
+        self._decision = "bic" if rule.endswith("bic") else "threshold"
         self.steps_per_epoch = int(steps_per_epoch)
         self.target: Scalable = as_scalable(model)
+        # propagate slime-mold mode to the type-nn adapter when present
+        if hasattr(self.target, "slime"):
+            self.target.slime = self.slime
+            self.target.slime_lambda = self.slime_lambda
         self.model: nn.Module = self.target.model
         self.optimizer = optimizer
         keep_invariants(optimizer, self.model)      # a >= 1 with any optimizer
@@ -223,7 +236,7 @@ class StructureScaler:
         y = y.detach().reshape(-1, m)
         t = t.detach().reshape(-1, m).to(y.dtype)
         ep = self._ep
-        if self.rule == "bic":        # only the evidence rule re-reads the pairs
+        if self._decision == "bic":        # only the evidence rule re-reads the pairs
             ep.x.append(x.detach())
             ep.t.append(t)
         ep.n += t.shape[0]
@@ -242,7 +255,7 @@ class StructureScaler:
         if self._closed:                      # no step since the last boundary
             self._new_epoch()
         self._close_epoch_residual()
-        bic = self.rule == "bic"
+        bic = self._decision == "bic"
         with self._editing():
             if ph == GROW and self.residual_unexplained():
                 # depth first: it reads the junction statistics other edits reset
@@ -346,7 +359,7 @@ class StructureScaler:
         age = self.step - self.target.born(item)
         if not self.target.displacement(item) > self.threshold(age):
             return False
-        return self.rule != "bic" or self.evidence(base, item) > 1.0
+        return self._decision != "bic" or self.evidence(base, item) > 1.0
 
     # ------------------------------------------------------------------- grow
 
@@ -429,7 +442,7 @@ class StructureScaler:
         self.counters.update(tgt.commit_removals(removed))
 
     def _prune_step(self) -> None:
-        if self.rule == "bic":
+        if self._decision == "bic":
             self._prune_step_bic()
         else:
             self._prune_band()
