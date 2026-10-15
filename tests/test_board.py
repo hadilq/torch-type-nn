@@ -35,14 +35,14 @@ def test_write_fills_markers_is_idempotent_and_says_when_data_is_missing(tmp_pat
     md = tmp_path / "B.md"
     md.write_text("intro\n" + "".join(f"<!-- board:{n} -->\nOLD\n<!-- /board:{n} -->\nprose\n"
                                       for n in ("per-sample", "port", "like-for-like",
-                                                "c-board", "scale")))
+                                                "c-board", "graph", "scale")))
     secs = board.sections([str(res)], [str(tmp_path / "none.jsonl")], str(ref))
     board.write(md, secs)
     text = md.read_text()
-    assert "OLD" not in text and text.count("prose") == 5
+    assert "OLD" not in text and text.count("prose") == 6
     assert "torch ref-type-nn vs C type-nn" in text          # port pair rendered
     assert "C type-nn vs C c-mlp" in text                    # C board pair rendered
-    assert text.count(board.MISSING) == 2                    # like-for-like and scale
+    assert text.count(board.MISSING) == 3                    # like-for-like, graph, scale
     board.write(md, secs)
     assert md.read_text() == text
 

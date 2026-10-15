@@ -1,6 +1,7 @@
+from .graph import NativeGraphTypeNN
 from .model import NativeTypeNN, native_available
 
-__all__ = ["NativeTypeNN", "native_available", "status"]
+__all__ = ["NativeTypeNN", "NativeGraphTypeNN", "native_available", "status"]
 
 
 def status() -> str:

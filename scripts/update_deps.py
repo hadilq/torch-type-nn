@@ -49,6 +49,8 @@ VENDORED = (
     "type_nn_overfit_scale.h",
     "type_nn_scale.c",
     "type_nn_scale.h",
+    "type_nn_graph.c",
+    "type_nn_graph.h",
 )
 ORIGIN_NAME = "ORIGIN"
 BRANCH = "deps/update"

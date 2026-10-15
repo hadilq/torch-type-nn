@@ -179,12 +179,9 @@ def fold_apply(c: AndOr, alpha: torch.Tensor, beta: torch.Tensor) -> None:
 class TypeNNAdapter:
     """:class:`TypeNN` under the :class:`~torch_type_nn.protocol.Scalable` protocol."""
 
-    def __init__(self, model: TypeNN, *, width_through_depth_probe: bool = True,
-                 slime: bool = False, slime_lambda: float = 1.0) -> None:
+    def __init__(self, model: TypeNN, *, width_through_depth_probe: bool = True) -> None:
         self.model = model
         self.through = bool(width_through_depth_probe)
-        self.slime = bool(slime)
-        self.slime_lambda = float(slime_lambda)
         self._sink: list | None = None
         self._tracking = False
 
@@ -306,31 +303,20 @@ class TypeNNAdapter:
     def best_site(self, axis: str, moving: Item | None = None):
         """Gap with the largest mean |dL/dx| over the epoch, counted in the
         stack without the depth probe. The gap behind the last layer has no
-        consumer to absorb a fold and is not a candidate.
-
-        When ``slime`` is enabled the score is the desirability
-        ``inf_flow - slime_lambda * bp_flow`` (inference flow minus weighted
-        back-propagation flow), generalising the loudest-gap heuristic.
-        """
+        consumer to absorb a fold and is not a candidate."""
         probe = None if moving is None else moving.address[0]
 
-        def score(layer: AndOr) -> float:
+        def loud(layer: AndOr) -> float:
             ns = float(layer.stat_ns)
-            if not ns:
-                return 0.0
-            bp = float(layer.stat_gin) / ns
-            if not self.slime:
-                return bp
-            inf = float(layer.stat_inf) / ns
-            return inf - self.slime_lambda * bp
+            return float(layer.stat_gin) / ns if ns else 0.0
 
         best_g, best, g = 0, -1.0, 0
         for i, layer in enumerate(self.layers):
             if i == probe:
                 continue
-            v = score(layer)
+            v = loud(layer)
             if probe is not None and i == probe + 1:
-                v = max(v, score(self.layers[probe]))
+                v = max(v, loud(self.layers[probe]))
             if v > best:
                 best, best_g = v, g
             g += 1

@@ -108,6 +108,11 @@ def _step_layer(layer: AndOr, lr: float, b1: float, b2: float, eps: float) -> No
     c1 = 1.0 / (1.0 - b1 ** t)                              # (m, R)
     c2 = 1.0 / (1.0 - b2 ** t)
     livef = live.to(layer.weight.dtype)
+    # A graph node's input column j is wrapped by an edge weight c_j; its
+    # weights step by lr / c_j (``Node.col_lr``) so c is a reparameterisation
+    # of the optimiser too (type_nn_graph.c). Chain layers have no col_lr.
+    col = getattr(layer, "col_lr", None)
+    wscale = livef.unsqueeze(-1) if col is None else livef.unsqueeze(-1) * col.to(livef)
     for p, m, v, cc1, cc2, lf in (
         (layer.weight, layer.adam_m_weight, layer.adam_v_weight,
          c1.unsqueeze(-1), c2.unsqueeze(-1), livef.unsqueeze(-1)),
@@ -118,5 +123,6 @@ def _step_layer(layer: AndOr, lr: float, b1: float, b2: float, eps: float) -> No
         g = g * lf
         m.mul_(b1).add_(g, alpha=1 - b1)
         v.mul_(b2).addcmul_(g, g, value=1 - b2)
-        p.sub_(lf * lr * (m * cc1) / ((v * cc2).sqrt() + eps))
+        step = wscale if p is layer.weight else lf
+        p.sub_(step * lr * (m * cc1) / ((v * cc2).sqrt() + eps))
     layer.assembly.clamp_(min=1.0)                          # at least one copy

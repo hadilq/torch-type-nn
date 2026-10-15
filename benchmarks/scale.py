@@ -13,8 +13,10 @@ Two tasks the type-nn board does not cover, trained in mini-batches:
 Both files are pinned in ``datasets.json`` (fetched by ``nix develop`` or
 ``fetch_data.py``). Same 70/30 xorshift split and train-only standardisation
 as ``bench.py``. Torch type-nn and scaled-MLP come from ``bench.build``
-(mini-batch Adam). ``c-type-nn`` / ``c-type-nn-overfit`` use NativeTypeNN's
-per-sample C epoch (not batch 32). ``cuda-type-nn`` / ``cuda-type-nn-overfit``
+(mini-batch Adam). ``graph-type-nn`` (GraphTypeNN + GraphScaler) trains
+the same way, at batch 32. ``c-type-nn`` / ``c-type-nn-overfit`` /
+``c-graph-type-nn`` use the C per-sample epoch (not batch 32).
+``cuda-type-nn`` / ``cuda-type-nn-overfit`` / ``cuda-graph-type-nn``
 use the ragged device store the same way. Plus two fixed MLPs (16 and 64).
 
     python benchmarks/scale.py [digits|friedman|all] [--models type-nn,mlp-16]
@@ -126,13 +128,13 @@ def run(task, kind, seed, B, device="cpu", data=None):
     n_in, n_out, n = Xtr.shape[1], Ytr.shape[1], Xtr.shape[0]
     family = _family(kind)
     t0 = time.perf_counter()
-    if family == "c":
+    if family in bench.NATIVE_FAMILIES:
         # C protocol: one sample at a time inside tnn_py_epoch. CPU only.
         model = bench.train_c(kind, n_in, n_out, seed, Xtr.cpu(), Ytr.cpu(), epochs, lr)
         scaler = None
         Xtr, Ytr, Xte, Yte = Xtr.cpu(), Ytr.cpu(), Xte.cpu(), Yte.cpu()
         curve = [model.num_params()]
-    elif family == "cuda":
+    elif family in bench.DEVICE_FAMILIES:
         model = bench.train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device)
         scaler = None
         Xtr, Ytr, Xte, Yte = (t.to(model.device) for t in (Xtr, Ytr, Xte, Yte))
@@ -146,7 +148,7 @@ def run(task, kind, seed, B, device="cpu", data=None):
             scaler = None
         else:
             model, opt, scaler = bench.build(
-                kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=1.0)
+                kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=1.0, n_train=n)
         g = torch.Generator().manual_seed(seed)
         curve = []
         model.train()
@@ -186,7 +188,8 @@ def run(task, kind, seed, B, device="cpu", data=None):
             "layers": getattr(model, "depth", 2),
             "params_curve": curve[:: max(1, epochs // 10)],
             "counters": counters,
-            "batch_size": 1 if family in ("c", "cuda") else B}
+            "batch_size": (1 if family in bench.NATIVE_FAMILIES + bench.DEVICE_FAMILIES
+                           else B)}
 
 
 _SPLITS: dict = {}
@@ -223,7 +226,7 @@ def main(argv=None):
     ap.add_argument("task", nargs="?", default="all", choices=["all", *TASKS])
     ap.add_argument("--models",
                     default="type-nn,type-nn-bic,mlp-scaled,mlp-16,mlp-64,"
-                            "c-type-nn,c-type-nn-overfit",
+                            "c-type-nn,c-type-nn-overfit,graph-type-nn,c-graph-type-nn",
                     help="comma-separated: " + ", ".join([*bench.MODELS, *FIXED]))
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=32)

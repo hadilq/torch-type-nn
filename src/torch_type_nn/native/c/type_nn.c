@@ -301,7 +301,7 @@ void tnn_epoch_end(TypeNN *net)  { tnn_scale_epoch(net); }
    Forward
    ════════════════════════════════════════════════════════════════════ */
 
-static void layer_forward(TnnLayer *l, const double *x, int stats)
+void tnn_layer_forward(TnnLayer *l, const double *x, int stats)
 {
     l->x = x;
     size_t n = l->n_in;
@@ -341,7 +341,7 @@ const double *tnn_forward(TypeNN *net, const double *x)
 {
     const double *cur = x;
     for (size_t i = 0; i < net->depth; i++) {
-        layer_forward(net->L[i], cur, net->training);
+        tnn_layer_forward(net->L[i], cur, net->training);
         cur = net->L[i]->z;
     }
     return cur;
@@ -377,11 +377,11 @@ static double zero_factor_slope(const TnnUnit *u, size_t r)
     return (double)sgn * exp(ell);   /* ∂z/∂A = 1 at A = 0 */
 }
 
-static void layer_backward(TypeNN *net, TnnLayer *l, const double *gz)
+void tnn_layer_backward_scaled(TnnLayer *l, const double *gz, double lr, int training,
+                               const double *col_lr)
 {
     size_t n = l->n_in;
     const double *x = l->x;
-    double lr = net->lr;
     memset(l->dx, 0, (n ? n : 1) * sizeof(double));
 
     for (size_t k = 0; k < l->n_out; k++) {
@@ -407,18 +407,27 @@ static void layer_backward(TypeNN *net, TnnLayer *l, const double *gz)
             /* one Adam step for this Or's group */
             o->t++;
             TnnAdamBias bc = tnn_adam_bias(o->t);
-            for (size_t j = 0; j < n; j++)
-                o->w[j] -= tnn_adam(&o->mw[j], &o->vw[j], delta * x[j], lr, bc);
+            if (col_lr)
+                for (size_t j = 0; j < n; j++)
+                    o->w[j] -= tnn_adam(&o->mw[j], &o->vw[j], delta * x[j], lr * col_lr[j], bc);
+            else
+                for (size_t j = 0; j < n; j++)
+                    o->w[j] -= tnn_adam(&o->mw[j], &o->vw[j], delta * x[j], lr, bc);
             o->b -= tnn_adam(&o->mb, &o->vb, delta, lr, bc);
             o->a -= tnn_adam(&o->ma, &o->va, ga, lr, bc);
             if (o->a < 1.0) o->a = 1.0;         /* at least one copy */
         }
     }
-    if (net->training && n) {
+    if (training && n) {
         double s = 0.0;
         for (size_t j = 0; j < n; j++) s += fabs(l->dx[j]);
         l->gin += s / (double)n;
     }
+}
+
+void tnn_layer_backward(TnnLayer *l, const double *gz, double lr, int training)
+{
+    tnn_layer_backward_scaled(l, gz, lr, training, NULL);
 }
 
 void tnn_backward(TypeNN *net, const double *dy)
@@ -451,7 +460,7 @@ void tnn_backward(TypeNN *net, const double *dy)
     memcpy(top->gz, dy, top->n_out * sizeof(double));
     for (size_t i = net->depth; i-- > 0; ) {
         TnnLayer *l = net->L[i];
-        layer_backward(net, l, l->gz);
+        tnn_layer_backward(l, l->gz, net->lr, net->training);
         if (i > 0) memcpy(net->L[i - 1]->gz, l->dx, l->n_in * sizeof(double));
     }
     net->step++;

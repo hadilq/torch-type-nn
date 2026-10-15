@@ -1,6 +1,7 @@
+from .graph import CudaGraphTypeNN
 from .model import CudaTypeNN, cuda_available
 
-__all__ = ["CudaTypeNN", "cuda_available", "status"]
+__all__ = ["CudaTypeNN", "CudaGraphTypeNN", "cuda_available", "status"]
 
 
 def status() -> str:

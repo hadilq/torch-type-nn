@@ -12,10 +12,36 @@ design is explained in
 > from C are listed in [docs/DIFFERENCES.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/DIFFERENCES.md); the audit
 > that led to the current defaults is in [docs/AUDIT.md](https://github.com/hadilq/torch-type-nn/blob/main/docs/AUDIT.md).
 
-High-level design of the architecture (including the planned graph and slime-mold
-extension) is in [ARCHITECTURE.md](ARCHITECTURE.md); the concrete implementation
-tasks, including the distillation ladder toward a Qwen ~8B-class flash model,
-are in [PLAN.md](PLAN.md).
+
+## Graph variant
+
+`GraphTypeNN` is type-nn on a DAG of nodes, the `graph-type-nn` of
+[type-nn](https://github.com/hadilq/type-nn) (`type_nn_graph.c`), ported
+exactly.
+- It is born as the chain plus small-world shortcuts born as dummies, and
+  only the first layer of nodes reads x.
+- Edges carry slime-mould weights: inference feedback sets the in-weights
+  and back-prop feedback the out-weights, each summing to 1 per node.
+- One dummy rule with BIC evidence grows and prunes merges, outputs, Ors
+  and depth.
+
+```python
+from torch_type_nn import GraphTypeNN, fit_graph
+
+model = GraphTypeNN(in_features=4, out_features=3, seed=1)
+scaler = fit_graph(model, X, Y, epochs=250, lr=0.005)   # lr: the effective Adam step
+print(model.structure(), model.num_params(), scaler.counters)
+```
+
+Or drive it from your own loop with `TypeAdam` and `GraphScaler`, as
+`StructureScaler` below. The same rule also runs in C
+(`NativeGraphTypeNN`, the reference) and as packed nodes on a device
+(`CudaGraphTypeNN`). All three are born with the same weights and take
+the same single step to 1e-12. Per-sample training is chaotic, though, so
+long runs agree as distributions over seeds, not digit for digit
+([docs/DIFFERENCES.md](docs/DIFFERENCES.md)). See
+[ARCHITECTURE.md](ARCHITECTURE.md) and the graph section of
+[BOARD.md](BOARD.md).
 
 ## Quick start
 

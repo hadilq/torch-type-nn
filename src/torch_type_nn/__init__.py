@@ -15,12 +15,13 @@ from importlib.metadata import PackageNotFoundError, version
 from . import functional
 from .adapters import MLPAdapter, TypeNNAdapter
 from .backend import available_backends, get_backend
-from .cuda import CudaTypeNN
+from .cuda import CudaGraphTypeNN, CudaTypeNN
 from .edits import Edit, follow_structure
 from .functional import and_or, readout
+from .graph import GraphScaler, GraphTypeNN, Node, fit_graph
 from .layer import AndOr
 from .mlp import ScalableMLP, TrackedLinear
-from .native import NativeTypeNN
+from .native import NativeGraphTypeNN, NativeTypeNN
 from .network import TypeNN, birth_depth
 from .optim import TypeAdam, keep_invariants
 from .protocol import DEGREE, DEPTH, WIDTH, EditContext, Item, Scalable, Trial
@@ -33,8 +34,9 @@ except PackageNotFoundError:  # running from a checkout without install
     __version__ = "0.0.0+local"
 
 __all__ = [
-    "AndOr", "TypeNN", "TypeAdam", "keep_invariants", "StructureScaler", "fit", "FitResult",
-    "mse_loss",
+    "AndOr", "TypeNN", "GraphTypeNN", "Node", "GraphScaler", "fit_graph",
+    "NativeGraphTypeNN", "CudaGraphTypeNN", "TypeAdam", "keep_invariants", "StructureScaler",
+    "fit", "FitResult", "mse_loss",
     "birth_depth", "and_or", "readout", "functional", "__version__",
     "Scalable", "Item", "Trial", "EditContext", "WIDTH", "DEGREE", "DEPTH",
     "TypeNNAdapter", "MLPAdapter", "ScalableMLP", "TrackedLinear", "Edit", "follow_structure",

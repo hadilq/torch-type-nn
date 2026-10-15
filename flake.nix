@@ -174,28 +174,53 @@
         # nixpkgs' multiple-outputs.sh fixup indirect-expands a joined output
         # name ("include lib", then "include stubs") and bash exits. Replacing
         # the hook dropped lib outputs from `out`, so cuda-bindings then linked
-        # against an empty cuda-redist/lib64. Override the function instead:
-        # propagate each output that exists, and never expand a joined name.
+        # against an empty cuda-redist/lib64. Override the function instead.
+        #
+        # It must propagate what upstream does: `propagatedBuildOutputs` when
+        # declared, else the outputs *named by* $outputBin $outputInclude
+        # $outputLib. Iterating only the literal names include/lib/static/
+        # stubs/bin missed `out` when a package's libraries live there:
+        # nccl (out/dev/static) then propagated only dev and static
+        # (libnccl_static.a), and ucc's configure failed with "NCCL support is
+        # requested but NCCL packages cannot be found" (libnvshmem -> openmpi
+        # -> ucc -> torch-bin). So: upstream's names, plus the literal list
+        # (kept, as it is what made the redist packages link: a superset of
+        # the previous override), each name word-split on its own so a joined
+        # name is never expanded whole.
         fixMultiout = cfinal: cprev:
           lib.mapAttrs (name: pkg:
             if lib.isDerivation pkg && pkg ? overrideAttrs then
               pkg.overrideAttrs (old: {
-                preFixup = (old.preFixup or "") + ''
-                  _multioutPropagateDev() {
-                    local dest="''${outputDev:-out}"
-                    [[ -n "''${!dest:-}" ]] || return 0
-                    mkdir -p "''${!dest}/nix-support"
-                    local o
-                    for o in include lib static stubs bin; do
-                      if [[ -n "''${!o:-}" && "$o" != "$dest" ]]; then
-                        echo -n " ''${!o}" >> "''${!dest}/nix-support/propagated-build-inputs"
-                      fi
-                    done
-                  }
-                '';
+                preFixup = (old.preFixup or "") + multioutPropagateDev;
               })
             else pkg
           ) cprev;
+        multioutPropagateDev = ''
+          _multioutPropagateDev() {
+            [[ "$(getAllOutputNames)" == "out" ]] && return 0
+            local dest="''${outputDev:-}" o
+            if [[ -z "$dest" ]]; then
+              for dest in $(getAllOutputNames); do break; done
+            fi
+            [[ -n "$dest" && -n "''${!dest:-}" ]] || return 0
+            local names
+            if declare -p propagatedBuildOutputs &>/dev/null; then
+              names="''${propagatedBuildOutputs[*]}"
+            else
+              names="''${outputBin:-} ''${outputInclude:-} ''${outputLib:-}"
+            fi
+            names+=" include lib static stubs bin"   # the previous override's set
+            local seen=" "
+            mkdir -p "''${!dest}/nix-support"
+            for o in $names; do
+              [[ "$o" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+              [[ "$o" != "$dest" && "$seen" != *" $o "* ]] || continue
+              seen+="$o "
+              [[ -n "''${!o:-}" ]] || continue
+              echo -n " ''${!o}" >> "''${!dest}/nix-support/propagated-build-inputs"
+            done
+          }
+        '';
         # libcusparse's auto-patchelf search path gets libnvjitlink.dev, but
         # libnvJitLink.so.13 is in the lib output. Do not attach that output to
         # every package: libnvjitlink would depend on itself and torch's
@@ -313,6 +338,8 @@
           # markdown board vs the C reference: nix run .#board -- benchmarks/out/*.jsonl
           # larger data (digits, Friedman #1): nix run .#scale -- all --seeds 5
           scale = script "tnn-scale" "Run the scale benchmark on digits and Friedman #1 (benchmarks/scale.py)" "${devPython}/bin/python benchmarks/scale.py \"$@\"";
+          # does a graph port take C's decisions? nix run .#graph-parity -- xor
+          graph-parity = script "tnn-graph-parity" "Compare a graph port with C graph-type-nn, epoch by epoch (benchmarks/graph_parity.py)" "${devPython}/bin/python benchmarks/graph_parity.py \"$@\"";
           board = script "tnn-board" "Render BOARD tables from benchmark results (benchmarks/board.py)" "${devPython}/bin/python benchmarks/board.py \"$@\"";
           # every benchmark result and the tables of BOARD.md, on all cores
           board-all = script "tnn-board-all" "Regenerate all benchmark results and BOARD.md" ''
@@ -343,12 +370,12 @@
             jobs="''${TNN_JOBS:-0}"
             mkdir -p benchmarks/results
             ${cudaPython}/bin/python benchmarks/bench.py all \
-              cuda-type-nn,cuda-type-nn-overfit,mlp \
+              cuda-type-nn,cuda-type-nn-overfit,cuda-graph-type-nn,mlp \
               --seeds 5 --device cuda --jobs "$jobs" -v \
               > benchmarks/results/board-cuda.jsonl.tmp
             mv benchmarks/results/board-cuda.jsonl.tmp benchmarks/results/board-cuda.jsonl
             ${cudaPython}/bin/python benchmarks/scale.py all \
-              --models cuda-type-nn,cuda-type-nn-overfit,mlp-16,mlp-64 \
+              --models cuda-type-nn,cuda-type-nn-overfit,cuda-graph-type-nn,mlp-16,mlp-64 \
               --seeds 5 --device cuda --jobs "$jobs" \
               > benchmarks/results/scale-cuda.jsonl.tmp
             mv benchmarks/results/scale-cuda.jsonl.tmp benchmarks/results/scale-cuda.jsonl

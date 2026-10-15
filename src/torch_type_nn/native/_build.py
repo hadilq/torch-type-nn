@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -22,7 +23,8 @@ def bridge_dir() -> Path:
 def type_nn_dir() -> Path:
     """One tree only. Mixing TYPE_NN_SRC .c with vendored headers drifts."""
     env = os.environ.get("TYPE_NN_SRC")
-    if env and Path(env, "type_nn.c").exists() and Path(env, "tnn_py.c").exists():
+    if (env and Path(env, "type_nn.c").exists() and Path(env, "tnn_py.c").exists()
+            and Path(env, "type_nn_graph.c").exists()):
         return Path(env)
     return bridge_dir()
 
@@ -45,19 +47,49 @@ def compile_library(force: bool = False) -> Path:
         bridge / "tnn_py.c",
         src / "type_nn.c", src / "type_nn_scale.c",
         src / "type_nn_overfit.c", src / "type_nn_overfit_scale.c",
+        src / "type_nn_graph.c",
     ]
     for f in files:
         if not f.exists():
             raise FileNotFoundError(f"native source missing: {f}")
-    if dest.exists() and not force:
-        newest = max(f.stat().st_mtime for f in files)
-        if dest.stat().st_mtime >= newest:
-            return dest
+    newest = max(f.stat().st_mtime for f in files)
+
+    def fresh() -> bool:
+        return not force and dest.exists() and dest.stat().st_mtime >= newest
+
+    if fresh():
+        return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [cc, "-O2", "-std=c11", "-shared", "-fPIC",
-         f"-I{bridge}", f"-I{src}", *[str(f) for f in files],
-         "-lm", "-o", str(dest)],
-        check=True,
-    )
+    # Parallel processes (bench --jobs, pytest-xdist) can all find the library
+    # stale at once. A lock serialises the compile, and an atomic rename means
+    # a reader never dlopens a half-written file.
+    with _lock(dest.with_name(dest.name + ".lock")):
+        if fresh():
+            return dest
+        tmp = dest.with_name(f"{dest.name}.{os.getpid()}.tmp")
+        try:
+            subprocess.run(
+                [cc, "-O2", "-std=c11", "-shared", "-fPIC",
+                 f"-I{bridge}", f"-I{src}", *[str(f) for f in files],
+                 "-lm", "-o", str(tmp)],
+                check=True,
+            )
+            os.replace(tmp, dest)
+        finally:
+            tmp.unlink(missing_ok=True)
     return dest
+
+
+@contextlib.contextmanager
+def _lock(path: Path):
+    try:
+        import fcntl
+    except ImportError:  # Windows: the atomic rename alone keeps readers safe
+        yield
+        return
+    with open(path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)

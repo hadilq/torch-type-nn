@@ -5,6 +5,16 @@
 | `torch` | `TypeNN` | padded `(m,R,n)` + mask | torch type-nn* |
 | `c` | `NativeTypeNN` | one `w[n_in]` per live Or | **C type-nn**, **C type-nn-overfit** |
 | `cuda` | `CudaTypeNN` | packed `W (R, n_in)` GEMM | cuda type-nn* |
+| `torch`, graph | `GraphTypeNN` | `AndOr` nodes + edge maps | torch graph-type-nn |
+| `c`, graph | `NativeGraphTypeNN` | C `type_nn_graph.c` | **C graph-type-nn** |
+| `cuda`, graph | `CudaGraphTypeNN` | packed `(R, n_in)` per node | cuda graph-type-nn |
+
+`get_backend(name, graph=True)` returns the graph class of a backend. The
+three graph classes run one rule (`graph/core.py`, a port of
+`type_nn_graph.c`); only the node storage differs. `NativeGraphTypeNN.snapshot()`
+reads the whole C state, and `GraphTypeNN.from_snapshot` /
+`CudaGraphTypeNN.from_snapshot` start from it, which is how the ports are
+checked number for number.
 
 ```python
 from torch_type_nn import CudaTypeNN, NativeTypeNN, get_backend

@@ -12,8 +12,6 @@ Models (``MODELS``; every one goes through the same ``train`` loop):
 
     type-nn              the architecture: threshold rule, width on every junction
     type-nn-bic          the same with the BIC prior (rule="bic")
-    type-nn-slime        threshold rule with slime-mold depth-probe placement
-    type-nn-slime-bic    BIC rule with slime-mold depth-probe placement
     ref-type-nn          C's type-nn exactly: rule="bic", width_through_depth_probe=False
     ref-type-nn-overfit  C's type-nn-overfit exactly: threshold rule, no width through the probe
     c-type-nn            NativeTypeNN wrapping C type-nn (BIC); board row "C type-nn"
@@ -22,6 +20,9 @@ Models (``MODELS``; every one goes through the same ``train`` loop):
     cuda-type-nn-overfit CudaTypeNN ragged device store, threshold rule
     mlp                  the c-mlp baseline: Linear-ReLU-Linear, 8 or 16 hidden units
     mlp-scaled           ScalableMLP grown and pruned by the default (threshold) rule
+    graph-type-nn        GraphTypeNN + GraphScaler: the C graph rule on AndOr nodes (autograd)
+    c-graph-type-nn      NativeGraphTypeNN wrapping C graph-type-nn; board row "C graph-type-nn"
+    cuda-graph-type-nn   CudaGraphTypeNN: packed nodes on the device, the same rule
 
     python benchmarks/bench.py [task|all] [model|all] [--seeds 5] [--batch-size 1] [--device cuda]
 
@@ -45,7 +46,11 @@ import torch
 from torch import nn
 
 from torch_type_nn import (
+    CudaGraphTypeNN,
     CudaTypeNN,
+    GraphScaler,
+    GraphTypeNN,
+    NativeGraphTypeNN,
     NativeTypeNN,
     ScalableMLP,
     StructureScaler,
@@ -199,8 +204,6 @@ class MLP(nn.Module):
 MODELS = {
     "type-nn": ("type-nn", "threshold", True),
     "type-nn-bic": ("type-nn", "bic", True),
-    "type-nn-slime": ("type-nn", "slime-threshold", True),
-    "type-nn-slime-bic": ("type-nn", "slime-bic", True),
     "ref-type-nn": ("type-nn", "bic", False),
     "ref-type-nn-overfit": ("type-nn", "threshold", False),
     "c-type-nn": ("c", "bic", None),
@@ -209,6 +212,9 @@ MODELS = {
     "cuda-type-nn-overfit": ("cuda", "threshold", None),
     "mlp": ("mlp", None, None),
     "mlp-scaled": ("mlp-scaled", "threshold", True),
+    "graph-type-nn": ("graph", "bic", None),
+    "c-graph-type-nn": ("c-graph", "bic", None),
+    "cuda-graph-type-nn": ("cuda-graph", "bic", None),
 }
 
 # JSON impl id written by aggregate (board.py keys).
@@ -217,17 +223,25 @@ IMPL = {
     "c-type-nn-overfit": "type-nn-overfit",
     "cuda-type-nn": "cuda-type-nn",
     "cuda-type-nn-overfit": "cuda-type-nn-overfit",
+    "c-graph-type-nn": "c-graph-type-nn",
+    "cuda-graph-type-nn": "cuda-graph-type-nn",
 }
+NATIVE_FAMILIES = ("c", "c-graph")
+DEVICE_FAMILIES = ("cuda", "cuda-graph")
 
 
-def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE):
+def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE,
+          n_train=None):
     """Model, optimizer and (for scaled models) the started scaler. The same
-    constructor serves the board (``lr * 0.1``, as bench.c) and scale.py."""
+    constructor serves the board (``lr * 0.1``, as bench.c) and scale.py.
+    ``n_train`` (samples per epoch) is used by the graph rule; default ``steps``."""
     family, rule, through = MODELS[kind]
-    if family == "c":
-        raise TypeError("C models are NativeTypeNN; use train_c / train(), not build()")
-    if family == "cuda":
-        raise TypeError("CUDA models are CudaTypeNN; use train_cuda / train(), not build()")
+    if family in NATIVE_FAMILIES:
+        raise TypeError("C models are NativeTypeNN / NativeGraphTypeNN; use train_c / train(), "
+                        "not build()")
+    if family in DEVICE_FAMILIES:
+        raise TypeError("CUDA models are CudaTypeNN / CudaGraphTypeNN; use train_cuda / "
+                        "train(), not build()")
     lr = lr * lr_scale
     if family == "type-nn":
         model = TypeNN(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
@@ -238,6 +252,13 @@ def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE)
         model = ScalableMLP(n_in, n_out, seed=seed, dtype=torch.float64).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
         target = model
+    elif family == "graph":
+        model = GraphTypeNN(n_in, n_out, seed=seed, device=device, dtype=torch.float64)
+        opt = TypeAdam(model, lr=lr)
+        scaler = GraphScaler(model, opt, epochs=epochs, steps_per_epoch=steps,
+                             n_train=n_train if n_train is not None else steps, rule=rule)
+        scaler.begin()
+        return model, opt, scaler
     else:
         model = MLP(n_in, n_out, seed).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -250,8 +271,9 @@ def build(kind, n_in, n_out, seed, lr, steps, epochs, device, lr_scale=LR_SCALE)
 def train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr):
     """C protocol via NativeTypeNN: one tnn_py_epoch per epoch (bench.c)."""
     family, rule, _ = MODELS[kind]
-    assert family == "c"
-    net = NativeTypeNN(n_in, n_out, rule=rule, seed=seed)
+    assert family in NATIVE_FAMILIES
+    net = (NativeGraphTypeNN(n_in, n_out, seed=seed) if family == "c-graph"
+           else NativeTypeNN(n_in, n_out, rule=rule, seed=seed))
     Xtr = Xtr.detach().cpu().to(torch.float64).contiguous()
     Ytr = Ytr.detach().cpu().to(torch.float64).contiguous()
     net.begin(Xtr.shape[0], epochs, lr)
@@ -266,8 +288,9 @@ def train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr):
 def train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device):
     """Ragged CudaTypeNN: fused Or GEMM, one sample Adam, C shuffle."""
     family, rule, _ = MODELS[kind]
-    assert family == "cuda"
-    net = CudaTypeNN(n_in, n_out, rule=rule, seed=seed, device=device)
+    assert family in DEVICE_FAMILIES
+    net = (CudaGraphTypeNN(n_in, n_out, seed=seed, device=device) if family == "cuda-graph"
+           else CudaTypeNN(n_in, n_out, rule=rule, seed=seed, device=device))
     Xtr = Xtr.detach().to(dtype=torch.float64, device=net.device).contiguous()
     Ytr = Ytr.detach().to(dtype=torch.float64, device=net.device).contiguous()
     net.begin(Xtr.shape[0], epochs, lr)
@@ -280,13 +303,13 @@ def train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device):
 
 
 def train(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, batch, device):
-    if MODELS[kind][0] == "c":
+    if MODELS[kind][0] in NATIVE_FAMILIES:
         return train_c(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr), None
-    if MODELS[kind][0] == "cuda":
+    if MODELS[kind][0] in DEVICE_FAMILIES:
         return train_cuda(kind, n_in, n_out, seed, Xtr, Ytr, epochs, lr, device), None
     n = Xtr.shape[0]
     steps = math.ceil(n / batch)
-    model, opt, scaler = build(kind, n_in, n_out, seed, lr, steps, epochs, device)
+    model, opt, scaler = build(kind, n_in, n_out, seed, lr, steps, epochs, device, n_train=n)
     model.train()
     for ep in range(epochs):
         order = list(range(n))
@@ -368,7 +391,7 @@ def run_seed(task, kind, s, batch, device, threads=1, timing=False):
     model, scaler = train(kind, n_in, n_out, SPLIT_SEED + 7919 * (s + 1), Xtr, Ytr,
                           epochs, lr, batch, device)
     r = {"train_s": time.perf_counter() - t0}
-    native = MODELS[kind][0] == "c"
+    native = MODELS[kind][0] in NATIVE_FAMILIES
     if native:
         Xtr, Ytr = Xtr.cpu(), Ytr.cpu()
         if Xte is not None:
@@ -379,7 +402,10 @@ def run_seed(task, kind, s, batch, device, threads=1, timing=False):
     r["params"] = model.num_params()
     r["layers"] = getattr(model, "depth", 2 if scaler is None else model.depth)
     r["structure"] = model.structure() if hasattr(model, "structure") else None
-    if scaler is not None:
+    r["edges"] = getattr(model, "n_edges", None)
+    if scaler is not None and hasattr(scaler.counters, "as_dict"):
+        r["counters"] = scaler.counters.as_dict()
+    elif scaler is not None:
         r["counters"] = dict(vars(scaler.counters))
     elif hasattr(model, "counters"):
         r["counters"] = model.counters()
@@ -406,7 +432,8 @@ def aggregate(task, kind, runs, batch, device):
     family, rule, through = MODELS[kind]
     n_in, n_out = runs[0]["n_in"], runs[0]["n_out"]
     out = {"impl": IMPL.get(kind, f"torch-{kind}"), "task": task, "rule": rule,
-           "backend": {"c": "nativetypenn", "cuda": "cudatypenn"}.get(family, "torch"),
+           "backend": {"c": "nativetypenn", "cuda": "cudatypenn",
+                       "c-graph": "nativegraph", "cuda-graph": "cudagraph"}.get(family, "torch"),
            "width_through_depth_probe": through, "device": str(device),
            "seeds": len(runs), "epochs": epochs, "lr": lr, "batch_size": batch,
            "hold_mse": mean(col["hold_mse"]), "hold_mse_sd": sd(col["hold_mse"]),
@@ -415,11 +442,14 @@ def aggregate(task, kind, runs, batch, device):
            "params": mean(col["params"]), "params_sd": sd(col["params"]),
            "train_s": mean(col["train_s"]), "us_per_infer": runs[-1]["us_per_infer"],
            "init_layers": (TypeNN(n_in, n_out).birth_depth
-                           if family in ("type-nn", "c", "cuda") else 2),
+                           if family in ("type-nn", "c", "cuda", "graph", "c-graph",
+                                         "cuda-graph") else 2),
+           "edges": mean([r.get("edges") for r in runs]),
            "structure": col["structure"] if any(col["structure"]) else None,
            "layers": mean(col["layers"]),
            "per_seed_hold_mse": col["hold_mse"]}
-    for k in ("or_add", "or_drop", "and_add", "and_drop", "layer_add", "layer_drop"):
+    for k in ("or_add", "or_drop", "and_add", "and_drop", "layer_add", "layer_drop",
+              "edge_add", "edge_drop"):
         out[k] = mean([r["counters"].get(k, 0) for r in runs])
     return out
 

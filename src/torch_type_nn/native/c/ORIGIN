@@ -1,4 +1,8 @@
 Vendored snapshot of https://github.com/hadilq/type-nn at commit
-7333bf79c336396eb2356dd9cfd2f6c9a7676261, plus tnn_py.c/h (the stable
-Python ABI). Lives at src/torch_type_nn/native/c so the wheel ships the
-sources as package data once — do not also force-include them from csrc/.
+73aff3c122d3412f3cd9dfcedc53eee4d4351436, plus one local change to
+type_nn_graph.c: explicit tie-breakers in the two qsort comparators
+(ekey_cmp: c, dst, src; cand_cmp: alone, listing order), so the order does not
+depend on the libc. The same change is proposed upstream (PLAN.md). Plus
+tnn_py.c/h (the stable Python ABI, chain and graph). Lives at
+src/torch_type_nn/native/c so the wheel ships the sources as package data
+once — do not also force-include them from csrc/.

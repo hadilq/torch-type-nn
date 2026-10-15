@@ -146,3 +146,49 @@ port of `type_nn.c` + `type_nn_scale.c`. Board gaps vs `NativeTypeNN` come
 from the scaler (width / depth / BIC pair cache), not from float32 vs
 float64 on the GEMM. Compare CUDA cells to C cells only after a scaler
 port, and never mix the 30-seed C-binary reference into `BOARD.CUDA.md`.
+
+## graph-type-nn
+
+`GraphTypeNN`, `NativeGraphTypeNN` and `CudaGraphTypeNN` port type-nn's
+`type_nn_graph.c` (vendored at `73aff3c`, plus deterministic sort tie-breaks,
+below). Where they can differ from C:
+
+- **Summation order.** The torch module computes an Or as a matmul and the
+  device store as a GEMM; C sums `b + Σ w_j x_j` in a fixed loop, and uses its
+  own softplus / sigmoid formulas. One step agrees to 1e-12
+  (`test_one_step_equals_c`), and short runs make C's decisions epoch by
+  epoch (`test_whole_run_follows_c`).
+  - Per-sample training is chaotic, so a long run does not stay equal. On
+    iris seed 0 the packed store makes exactly C's structural decisions
+    through the whole grow and fit phases (165 epochs).
+  - Over that span the output difference grows from 1e-15 to O(1), roughly
+    tenfold every few epochs, and the prune phase then takes different
+    decisions.
+  - C itself is bit-stable across `-O0`/`-O2`/`-O3 -march=native`, because
+    its loop order is fixed.
+  - So long runs are compared to C as distributions over seeds. On iris
+    (5 seeds) C scores 0.0218 ± 0.0065, the torch module 0.0213 ± 0.0044
+    and the packed store 0.0277 ± 0.0147.
+  - From C's own state at any epoch, the ports take C's decision for that
+    epoch (`test_prune_epochs_from_c_state_equal_c`).
+- **size_t arithmetic.** C's `criterion` takes the parameter count as
+  `size_t`, and `prune_pool` can pass it a negative difference, which wraps.
+  The port wraps the same way (`GraphCore.criterion`), so it prunes as C
+  does. See PLAN.md §5 for why this is also worth fixing in C.
+- **Batches.** `GraphScaler` counts optimizer steps, as `StructureScaler`
+  does (§3); `batch_size=1` is C's protocol. The feedback is accumulated per
+  sample within a batch, and the back-prop feedback then carries the batch
+  mean's `1/B`, which scales every edge's out-feedback alike, so the shares
+  do not change.
+- **One rule.** The graph has only the BIC evidence rule;
+  `GraphScaler(rule="threshold")` raises. The chain's threshold rule has no
+  graph counterpart in C.
+- **Optimizer.** `GraphScaler` requires `TypeAdam`. The rule rescales
+  columns and their Adam moments (absorbing an edge-weight change, folding a
+  depth edit), and steps a column wrapped by weight `c` by `lr / c`. TypeAdam
+  keeps the moments in the node (`AndOr.adam_*`) and reads `Node.col_lr`.
+- **Sort ties.** C's `prune_edges` and `prune_pool` sort with `qsort`,
+  whose order on ties depends on the libc (glibc ≥ 2.37 is not stable). The
+  vendored C breaks ties explicitly: edges by `(c, dst, src)`, pool
+  candidates by listing order. The Python port does the same. The same patch
+  is proposed upstream.

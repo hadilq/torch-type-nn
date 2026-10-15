@@ -118,6 +118,17 @@ void          tnn_layer_drop_unit(TnnLayer *l, size_t k);
 void          tnn_layer_add_input(TnnLayer *l);       /* new column, weight 0 */
 void          tnn_layer_drop_input(TnnLayer *l, size_t j);
 void          tnn_layer_reset_stats(TnnLayer *l);
+/* One layer's forward (z from x; x is cached, not owned; stats=1 also
+   accumulates the junction statistics) and backward (dx with the
+   pre-update weights, then one Adam step per Or). Shared by the chain
+   and the graph so both compute exactly the same unit. */
+void          tnn_layer_forward(TnnLayer *l, const double *x, int stats);
+void          tnn_layer_backward(TnnLayer *l, const double *gz, double lr, int training);
+/* The same, with the Adam step of input column j scaled by col_lr[j]
+   (NULL = 1). The graph uses 1/c_e so an edge weight c_e that wraps the
+   column is a reparameterisation for the optimiser as well. */
+void          tnn_layer_backward_scaled(TnnLayer *l, const double *gz, double lr, int training,
+                                        const double *col_lr);
 void          tnn_net_insert_layer(TypeNN *net, size_t at, TnnLayer *l);
 TnnLayer     *tnn_net_remove_layer(TypeNN *net, size_t at);
 

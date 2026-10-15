@@ -42,7 +42,42 @@ def load():
     lib.tnn_py_structure.argtypes = [c_void_p, c_int, POINTER(c_int), c_int,
                                      POINTER(c_int), POINTER(c_int)]
     lib.tnn_py_structure.restype = c_int
+    _graph_signatures(lib)
     return lib
+
+
+def _graph_signatures(lib) -> None:
+    from ctypes import POINTER, c_char_p, c_long
+    P = POINTER
+    lib.tnn_py_g_create.argtypes = [c_size_t, c_size_t, c_uint]
+    lib.tnn_py_g_create.restype = c_void_p
+    lib.tnn_py_g_free.argtypes = [c_void_p]
+    lib.tnn_py_g_begin.argtypes = [c_void_p, c_size_t, c_size_t, c_double]
+    lib.tnn_py_g_end.argtypes = [c_void_p]
+    lib.tnn_py_g_set_training.argtypes = [c_void_p, c_int]
+    lib.tnn_py_g_forward.argtypes = [c_void_p, P(c_double), P(c_double)]
+    lib.tnn_py_g_backward.argtypes = [c_void_p, P(c_double)]
+    lib.tnn_py_g_step.argtypes = [c_void_p, P(c_double), P(c_double)]
+    lib.tnn_py_g_epoch.argtypes = [c_void_p, P(c_double), P(c_double), c_size_t, c_uint]
+    lib.tnn_py_g_epoch_end.argtypes = [c_void_p]
+    lib.tnn_py_g_params.argtypes = [c_void_p]
+    lib.tnn_py_g_params.restype = c_size_t
+    lib.tnn_py_g_sizes.argtypes = [c_void_p, P(c_size_t)]
+    lib.tnn_py_g_counters.argtypes = [c_void_p, P(c_uint)]
+    lib.tnn_py_g_scalars.argtypes = [c_void_p, P(c_double)]
+    lib.tnn_py_g_node.argtypes = [c_void_p, c_size_t, P(c_long), P(c_double)]
+    lib.tnn_py_g_node.restype = c_int
+    lib.tnn_py_g_unit.argtypes = [c_void_p, c_size_t, c_size_t, P(c_long)]
+    lib.tnn_py_g_unit.restype = c_int
+    lib.tnn_py_g_or.argtypes = [c_void_p, c_size_t, c_size_t, c_size_t,
+                                P(c_double), P(c_double), P(c_double), P(c_double)]
+    lib.tnn_py_g_or.restype = c_int
+    lib.tnn_py_g_edge.argtypes = [c_void_p, c_size_t, P(c_long), P(c_double)]
+    lib.tnn_py_g_edge.restype = c_int
+    lib.tnn_py_g_edge_pairs.argtypes = [c_void_p, c_size_t, P(c_long), P(c_long)]
+    lib.tnn_py_g_edge_pairs.restype = c_int
+    lib.tnn_py_g_check.argtypes = [c_void_p, c_char_p, c_size_t]
+    lib.tnn_py_g_check.restype = c_int
 
 
 def native_available() -> tuple[bool, str]:

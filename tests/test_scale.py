@@ -39,7 +39,7 @@ def test_board_cuda_markers_and_write(tmp_path):
     }) + "\n")
     md = tmp_path / "BOARD.CUDA.md"
     md.write_text("".join(f"<!-- board:{n} -->\nOLD\n<!-- /board:{n} -->\n"
-                          for n in ("per-sample", "pairs", "scale")))
+                          for n in ("per-sample", "pairs", "graph", "scale")))
     secs = board.sections_cuda([str(res)], [str(tmp_path / "none.jsonl")], str(ref))
     board.write(md, secs)
     text = md.read_text()

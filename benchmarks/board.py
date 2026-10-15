@@ -41,12 +41,19 @@ NAMES = {
     "torch-mlp-scaled": "torch MLP, scaled",
     "cuda-type-nn": "cuda type-nn",
     "cuda-type-nn-overfit": "cuda type-nn-overfit",
+    "c-graph-type-nn": "C graph-type-nn",
+    "torch-graph-type-nn": "**torch graph-type-nn**",
+    "cuda-graph-type-nn": "cuda graph-type-nn",
 }
+GRAPH = ("c-graph-type-nn", "torch-graph-type-nn", "cuda-graph-type-nn")
 SCALE_NAMES = {"type-nn": "**type-nn**", "type-nn-bic": "type-nn-bic",
                "mlp-scaled": "MLP, scaled", "mlp-16": "MLP-16", "mlp-64": "MLP-64",
                "c-type-nn": "C type-nn", "c-type-nn-overfit": "C type-nn-overfit",
                "cuda-type-nn": "cuda type-nn",
-               "cuda-type-nn-overfit": "cuda type-nn-overfit"}
+               "cuda-type-nn-overfit": "cuda type-nn-overfit",
+               "c-graph-type-nn": "C graph-type-nn",
+               "graph-type-nn": "**graph-type-nn**",
+               "cuda-graph-type-nn": "cuda graph-type-nn"}
 
 # (a, b, why): a against b on hold-out MSE
 PORT = [("torch-ref-type-nn", "type-nn", "port of C type-nn (BIC rule, C width rule)"),
@@ -57,10 +64,19 @@ LIKE = [("torch-type-nn", "torch-mlp", "the architecture vs the MLP baseline"),
         ("torch-type-nn", "torch-type-nn-bic", "threshold rule vs BIC rule"),
         ("torch-mlp-scaled", "torch-mlp", "the rule on an MLP vs the fixed MLP")]
 CBOARD = [("type-nn", "c-mlp", "C board"), ("type-nn-overfit", "c-mlp", "C board")]
+GRAPH_PAIRS = [("torch-graph-type-nn", "c-graph-type-nn", "port of C graph-type-nn"),
+               ("cuda-graph-type-nn", "c-graph-type-nn", "device port of C graph-type-nn"),
+               ("c-graph-type-nn", "type-nn", "the goal: graph vs C type-nn"),
+               ("torch-graph-type-nn", "torch-ref-type-nn", "graph vs the chain, torch"),
+               ("torch-graph-type-nn", "torch-mlp", "graph vs the MLP baseline")]
 SCALE_PAIRS = [("type-nn", "mlp-16"), ("type-nn", "mlp-64"), ("type-nn-bic", "mlp-64"),
                ("type-nn", "type-nn-bic"), ("mlp-scaled", "mlp-16"),
                ("c-type-nn", "mlp-16"), ("c-type-nn-overfit", "mlp-16"),
-               ("c-type-nn", "c-type-nn-overfit"), ("c-type-nn", "type-nn")]
+               ("c-type-nn", "c-type-nn-overfit"), ("c-type-nn", "type-nn"),
+               # graph-type-nn: the goal (C graph vs C chain) and the torch port
+               # at batch 32 against the chain with the same (BIC) rule
+               ("c-graph-type-nn", "c-type-nn"), ("c-graph-type-nn", "mlp-16"),
+               ("graph-type-nn", "type-nn-bic"), ("graph-type-nn", "mlp-16")]
 CUDA_PAIRS = [("cuda-type-nn", "torch-mlp", "ragged CUDA vs torch MLP"),
               ("cuda-type-nn-overfit", "torch-mlp", "ragged CUDA overfit vs torch MLP"),
               ("cuda-type-nn", "cuda-type-nn-overfit", "CUDA BIC vs threshold"),
@@ -68,12 +84,20 @@ CUDA_PAIRS = [("cuda-type-nn", "torch-mlp", "ragged CUDA vs torch MLP"),
               ("cuda-type-nn-overfit", "type-nn-overfit", "CUDA threshold vs C overfit")]
 CUDA_SCALE_PAIRS = [("cuda-type-nn", "mlp-16"), ("cuda-type-nn-overfit", "mlp-16"),
                     ("cuda-type-nn", "cuda-type-nn-overfit"),
-                    ("cuda-type-nn", "c-type-nn")]
+                    ("cuda-type-nn", "c-type-nn"),
+                    ("cuda-graph-type-nn", "c-graph-type-nn"),
+                    ("cuda-graph-type-nn", "mlp-16")]
 
 MISSING = "_Not generated yet: run `nix run .#board-all` (or see the commands above)._"
 
 
-def read(paths):
+def read(paths, prefer_device=False):
+    """Rows keyed by (task, impl); a later file overrides an earlier one.
+
+    With ``prefer_device`` a row trained on a GPU is never replaced by a CPU
+    row of the same cell: ``board-all`` also runs the cuda-* models on the CPU
+    (into board-per-sample.jsonl), and BOARD.CUDA.md must keep its GPU rows.
+    """
     rows, found = {}, []
     for p in paths:
         p = Path(p)
@@ -83,8 +107,17 @@ def read(paths):
         for line in p.read_text().splitlines():
             if line.strip():
                 r = json.loads(line)
-                rows[(r["task"], r["impl"])] = r
+                k = (r["task"], r["impl"])
+                old = rows.get(k)
+                if (prefer_device and old is not None and _on_gpu(old)
+                        and not _on_gpu(r)):
+                    continue
+                rows[k] = r
     return rows, found
+
+
+def _on_gpu(r) -> bool:
+    return str(r.get("device", "cpu")).startswith("cuda")
 
 
 def verdict(a, b):
@@ -110,11 +143,13 @@ def rel(paths):
     return ", ".join(out)
 
 
-def per_sample_table(rows):
-    impls = [i for i in NAMES if any(k[1] == i for k in rows)]
+def per_sample_table(rows, only=None, edges=False):
+    impls = [i for i in NAMES if any(k[1] == i for k in rows)
+             and (only is None or i in only)]
     out = ["| task | model | hold MSE | ± sd | hold acc | train MSE | params | ± sd "
-           "| layers | train s | µs/inf |",
-           "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+           "| layers | " + ("edges | " if edges else "") + "train s | µs/inf |",
+           "|---|---|---:|---:|---:|---:|---:|---:|---:|" + ("---:|" if edges else "")
+           + "---:|---:|"]
     for t in ORDER:
         for i in impls:
             r = rows.get((t, i))
@@ -125,7 +160,8 @@ def per_sample_table(rows):
                 f"| {t} | {NAMES[i]} | {fmt(r['hold_mse'], '.4f')} | {fmt(sd, '.4f')} "
                 f"| {fmt(r['hold_acc'], '.3f')} | {fmt(r['mse'], '.2e')} | {r['params']:.1f} "
                 f"| {r['params_sd']:.1f} | {r['init_layers']}→{r['layers']:.1f} "
-                f"| {fmt(r.get('train_s'), '.2f')} | {fmt(r.get('us_per_infer'), '.1f')} |")
+                + (f"| {fmt(r.get('edges'), '.1f')} " if edges else "")
+                + f"| {fmt(r.get('train_s'), '.2f')} | {fmt(r.get('us_per_infer'), '.1f')} |")
     return out
 
 
@@ -191,6 +227,16 @@ def _cuda_row(r) -> bool:
             or str(r.get("device", "")).startswith("cuda"))
 
 
+def graph_section(rows, src):
+    """graph-type-nn: its three implementations and the goal (C type-nn's
+    hold-out with fewer parameters)."""
+    if not any(k[1] in GRAPH for k in rows):
+        return [MISSING]
+    t = per_sample_table(rows, only=GRAPH, edges=True)
+    p = pairs_table(rows, GRAPH_PAIRS, NAMES, ORDER) or []
+    return [f"{src}.", "", *t, "", *p]
+
+
 def sections_cuda(board, scale, reference):
     """BOARD.CUDA.md: CUDA cells plus 5-seed C/MLP rows from the listed files.
 
@@ -200,8 +246,8 @@ def sections_cuda(board, scale, reference):
     """
     if reference and not Path(reference).exists():
         raise SystemExit(f"C reference {reference} not found")
-    b_rows, b_found = read(board)
-    s_rows, s_found = read(scale)
+    b_rows, b_found = read(board, prefer_device=True)
+    s_rows, s_found = read(scale, prefer_device=True)
     rows = dict(b_rows)
     src = f"Generated by `benchmarks/board.py --write-cuda` from {rel(b_found)}"
     have = any(_cuda_row(r) for r in b_rows.values())
@@ -215,6 +261,7 @@ def sections_cuda(board, scale, reference):
         out["per-sample"] += ["", MISSING]
     t = pairs_table(rows, CUDA_PAIRS, NAMES, ORDER)
     out["pairs"] = t if t else [MISSING]
+    out["graph"] = graph_section(rows, src)
     cuda_scale = {k: r for k, r in s_rows.items()
                   if _cuda_row(r) or r["impl"] in SCALE_NAMES}
     if cuda_scale:
@@ -254,6 +301,7 @@ def sections(board, scale, reference):
     for name, pairs in (("port", PORT), ("like-for-like", LIKE), ("c-board", CBOARD)):
         t = pairs_table(rows, pairs, NAMES, ORDER)
         out[name] = t if t else [MISSING]
+    out["graph"] = graph_section(rows, src)
     if s_rows:
         pairs = pairs_table(s_rows, [(a, b) for a, b in SCALE_PAIRS], SCALE_NAMES, SCALE_ORDER)
         out["scale"] = [f"Generated by `benchmarks/board.py` from {rel(s_found)} "
