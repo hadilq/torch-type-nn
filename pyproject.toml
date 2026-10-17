@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "torch-type-nn"
-version = "0.1.1.dev0"
+version = "0.1.2.dev0"
 description = "type-nn for PyTorch: networks of partition functions (And of Ors) that grow and prune their own width, degree and depth"
 readme = "README.md"
 license = "MIT"
