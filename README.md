@@ -248,6 +248,7 @@ nix build              # ./result: the installed package
 nix run .#dist         # sdist + wheel in ./dist, checked by twine
 nix run .#publish -- --repository testpypi   # upload (TestPyPI first)
 nix run .#update-deps      # VERSIONS.md; bump patch + PR inputs if a pin moved
+nix run .#release -- 0.2.0 # version, commit, tag v0.2.0 (see RELEASE.md)
 ```
 
 `nix run .#update-deps -- --pr` pushes `deps/update` and opens the PR (needs
@@ -277,7 +278,7 @@ nix run .#test-cuda              # on the host, now: no Nix configuration needed
 nix build .#cuda-tests -L        # in the build sandbox: needs the `cuda` feature
 nix flake check --impure         # adds checks.cuda when /dev/nvidiactl exists
 TORCH_TYPE_NN_CUDA=1 nix flake check --impure   # force it (=0: leave it out)
-nix develop .#cuda               # torch-bin (CUDA 13.0) shell
+nix develop .#cuda               # torch-bin (CUDA 13.4) shell
 nix run .#bench-cuda -- all all --seeds 5 --device cuda
 nix run .#board-cuda             # writes BOARD.CUDA.md from device runs
 ```
@@ -321,7 +322,16 @@ path that may be missing). With several GPUs add `/dev/nvidia1`, ... Check with
 
 ## Publishing
 
-It's in development state, but you can use download it from PyPI [here](https://pypi.org/project/torch-type-nn/).
+```sh
+nix run .#release -- 0.2.0          # bump, commit, tag
+git push origin HEAD && git push origin v0.2.0
+```
+
+The `v*` tag runs `.github/workflows/publish.yml` (build, test, trusted
+publishing to PyPI). Full steps are in [RELEASE.md](RELEASE.md).
+
+It's in development state; the current release is on PyPI
+[here](https://pypi.org/project/torch-type-nn/).
 
 ## License
 

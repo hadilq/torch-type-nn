@@ -258,6 +258,13 @@
             export PATH=${lib.makeBinPath [ pkgs.python3 pkgs.gh pkgs.git ]}:$PATH
             python3 ${./scripts/update_deps.py} "$@"
           '';
+          # nix run .#release -- 0.2.0
+          # Updates pyproject.toml, README.md, VERSIONS.md; commits; tags v0.2.0.
+          # See RELEASE.md.
+          release = script "tnn-release" "Cut a release: bump version, commit, and tag" ''
+            export PATH=${lib.makeBinPath [ pkgs.python3 pkgs.git ]}:$PATH
+            python3 ${./scripts/release.py} "$@"
+          '';
           # the board: nix run .#bench -- iris type-nn --seeds 5
           bench = script "tnn-bench" "Run the benchmark board (benchmarks/bench.py)" "${devPython}/bin/python benchmarks/bench.py \"$@\"";
           # markdown board vs the C reference: nix run .#board -- benchmarks/out/*.jsonl
