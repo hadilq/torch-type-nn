@@ -14,7 +14,7 @@ rewritten by the updater.
 
 | Component | Kind | Pin | Locked | Upstream |
 | --- | --- | --- | --- | --- |
-| torch-type-nn | package | `pyproject.toml` | `0.1.1.dev0` | — |
+| torch-type-nn | package | `pyproject.toml` | `0.2.0` | — |
 | nixpkgs | flake input | `nixos-unstable` | `1c89083e451e` (2026-10-30) | `1c89083e451e` (matches pin) |
 | flake-utils | flake input | `github:numtide/flake-utils` | `11707dc2f618` (2024-11-13) | `11707dc2f618` (matches pin) |
 | type-nn-c | flake input, vendored C | `github:hadilq/type-nn` | `7333bf79c336` (2026-09-22) | `7333bf79c336` (matches pin) |
