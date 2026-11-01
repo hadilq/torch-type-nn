@@ -175,6 +175,12 @@ below). Where they can differ from C:
   `size_t`, and `prune_pool` can pass it a negative difference, which wraps.
   The port wraps the same way (`GraphCore.criterion`), so it prunes as C
   does. See PLAN.md §5 for why this is also worth fixing in C.
+- **Batch training.** C's graph trains one sample at a time. `GraphTypeNN`
+  also trains in mini-batches (any `TypeAdam` loop with `GraphScaler`), with
+  the schedule counted in optimizer steps. Batches grow larger graphs before
+  the prune phase. There the miscount above makes `prune_pool` remove too
+  much: digits at batch 32 collapses (BOARD.md, larger data). Per-sample
+  training is the C protocol and is not affected.
 - **Batches.** `GraphScaler` counts optimizer steps, as `StructureScaler`
   does (§3); `batch_size=1` is C's protocol. The feedback is accumulated per
   sample within a batch, and the back-prop feedback then carries the batch

@@ -127,8 +127,11 @@ ports it exactly.
 The rule (`torch_type_nn/graph/core.py`) is written once against a small
 `NodeStore` interface; the backends differ only in how a node stores its Ors.
 Every random draw is C's `xorshift32` stream in C's order, so all three are
-born with the C graph's weights, take the same per-sample step to 1e-12, and
-follow the C run's structural decisions (tests/test_graph.py).
+born with the C graph's weights, and take the same per-sample step to 1e-12.
+Started from the C graph's state at any epoch, they take that epoch's
+structural decisions. A long run drifts from C's path, because per-sample
+training amplifies rounding (tests/test_graph.py,
+`benchmarks/graph_parity.py`).
 
 ## Faithfulness
 
@@ -146,4 +149,6 @@ An implementation is faithful when:
 
 The chain implementation satisfies these criteria (see `docs/AUDIT.md` and
 `docs/DIFFERENCES.md`). The graph variant is held to the same standard by
-checking it against the C graph number for number (`tests/test_graph.py`).
+checking it against the C graph number for number: births, single steps and
+single epochs from the same state (`tests/test_graph.py`). Whole runs are
+compared over seeds on the board.

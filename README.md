@@ -43,6 +43,20 @@ long runs agree as distributions over seeds, not digit for digit
 [ARCHITECTURE.md](ARCHITECTURE.md) and the graph section of
 [BOARD.md](BOARD.md).
 
+What the board shows (5 seeds, per-sample protocol):
+- **Against the chain (C graph vs C type-nn):** hold-out within noise or
+  better on every task, with fewer parameters on iris (0.64×), wdbc (0.79×)
+  and diabetes (0.92×). Wine is clearly better at the same size. On the
+  larger data the graph equals the chain on digits with 0.75× the
+  parameters, and is clearly better on friedman, near the noise floor.
+- **The ports against C:** within noise on most cells. The exceptions,
+  and how to check one, are in PLAN.md §6 and `nix run .#graph-parity`.
+- **Known limitation:** at batch 32, `GraphTypeNN` collapses on digits in
+  its prune phase (hold MSE 0.07 against C's 0.006). This is a flaw in the
+  C rule's parameter count, reached by the larger models that batch
+  training grows (PLAN.md §5). Train the graph per sample, as `fit_graph`
+  does by default, until it is fixed.
+
 ## Quick start
 
 ```python

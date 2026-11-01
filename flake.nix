@@ -1,6 +1,15 @@
 {
   description = "torch-type-nn: type-nn (dynamic And-Or partition-function networks) for PyTorch";
 
+  # Pull prebuilt CUDA packages (cuda13.4-nccl, cuda13.4-cudnn, …) from the
+  # nixos-cuda cache instead of building them.
+  nixConfig = {
+    extra-substituters = [ "https://cache.nixos-cuda.org" ];
+    extra-trusted-public-keys = [
+      "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -49,7 +58,10 @@
     in
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
         python = pkgs.python312;
         py = python.pkgs;
 
@@ -77,7 +89,7 @@
           src = pkgs.lib.cleanSource ./.;
 
           build-system = [ py.hatchling ];
-          dependencies = [ py.torch ];
+          dependencies = [ py.torch-bin ];
 
           # gcc + TYPE_NN_SRC enable tests/test_crosscheck_c.py, which compiles
           # the reference C code and compares forward, backward and Adam
@@ -113,7 +125,7 @@
 
         # Interpreter with the library and every developer tool.
         devPython = python.withPackages (ps: [
-          ps.torch
+          ps.torch-bin
           ps.numpy
           ps.pytest
           ps.hatchling
@@ -143,111 +155,24 @@
         '';
 
         # --- CUDA ---------------------------------------------------------------
-        # The official PyTorch wheel (torch-bin 2.13, unfree) is built for CUDA
-        # 13.0 (cu130), so the CUDA set is pinned to exactly 13.0: its
-        # cuda-bindings (13.0.3) satisfy torch-bin's >= 13.0.3 guard. Not
-        # `cudaPackages_13`: in the locked nixpkgs that is 13.3, whose cccl
-        # applies a patch (fix-invalid-cpp-syntax, for 13.2 <= cuda < 13.4) that
-        # 13.3.3 already contains, so cccl -> cuda_cudart -> torch fail to build.
-        cudaSet = "cudaPackages_13_0";
-        # NCCL is built from source. NVIDIA re-pointed the v2.32.3-1 tag
-        # (2026-09-17) to a merge commit, so the tarball nixpkgs pinned
-        # (sha256-ytAJ...) is no longer what GitHub serves and the fetch fails
-        # with a hash mismatch; nixpkgs master still has the old hash. Pin the
-        # tag's current commit by rev (immutable), with its hash computed
-        # independently. Applies only while nixpkgs is at that version with that
-        # hash, so it switches itself off once nixpkgs is fixed or bumped.
-        ncclStaleHash = "sha256-ytAJn8F0QEHhUadiOmVKTUiL7lsUnasoP4MOv/t60xk=";
-        fixNccl = cfinal: cprev: {
-          nccl =
-            if cprev.nccl.version == "2.32.3-1" && cprev.nccl.src.outputHash == ncclStaleHash
-            then cprev.nccl.overrideAttrs (old: {
-              src = pkgs.fetchFromGitHub {
-                owner = "NVIDIA";
-                repo = "nccl";
-                rev = "12df1a11afad322be5a204a2db890161cbf8131d"; # tag v2.32.3-1 since 2026-09-17
-                hash = "sha256-xUllfdWAL0Ee9P9T9CZC2ddkPRnSXZXgwApgO398i6g=";
-              };
-            })
-            else cprev.nccl;
-        };
-        # nixpkgs' multiple-outputs.sh fixup indirect-expands a joined output
-        # name ("include lib", then "include stubs") and bash exits. Replacing
-        # the hook dropped lib outputs from `out`, so cuda-bindings then linked
-        # against an empty cuda-redist/lib64. Override the function instead.
-        #
-        # It must propagate what upstream does: `propagatedBuildOutputs` when
-        # declared, else the outputs *named by* $outputBin $outputInclude
-        # $outputLib. Iterating only the literal names include/lib/static/
-        # stubs/bin missed `out` when a package's libraries live there:
-        # nccl (out/dev/static) then propagated only dev and static
-        # (libnccl_static.a), and ucc's configure failed with "NCCL support is
-        # requested but NCCL packages cannot be found" (libnvshmem -> openmpi
-        # -> ucc -> torch-bin). So: upstream's names, plus the literal list
-        # (kept, as it is what made the redist packages link: a superset of
-        # the previous override), each name word-split on its own so a joined
-        # name is never expanded whole.
-        fixMultiout = cfinal: cprev:
-          lib.mapAttrs (name: pkg:
-            if lib.isDerivation pkg && pkg ? overrideAttrs then
-              pkg.overrideAttrs (old: {
-                preFixup = (old.preFixup or "") + multioutPropagateDev;
-              })
-            else pkg
-          ) cprev;
-        multioutPropagateDev = ''
-          _multioutPropagateDev() {
-            [[ "$(getAllOutputNames)" == "out" ]] && return 0
-            local dest="''${outputDev:-}" o
-            if [[ -z "$dest" ]]; then
-              for dest in $(getAllOutputNames); do break; done
-            fi
-            [[ -n "$dest" && -n "''${!dest:-}" ]] || return 0
-            local names
-            if declare -p propagatedBuildOutputs &>/dev/null; then
-              names="''${propagatedBuildOutputs[*]}"
-            else
-              names="''${outputBin:-} ''${outputInclude:-} ''${outputLib:-}"
-            fi
-            names+=" include lib static stubs bin"   # the previous override's set
-            local seen=" "
-            mkdir -p "''${!dest}/nix-support"
-            for o in $names; do
-              [[ "$o" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-              [[ "$o" != "$dest" && "$seen" != *" $o "* ]] || continue
-              seen+="$o "
-              [[ -n "''${!o:-}" ]] || continue
-              echo -n " ''${!o}" >> "''${!dest}/nix-support/propagated-build-inputs"
-            done
-          }
-        '';
-        # libcusparse's auto-patchelf search path gets libnvjitlink.dev, but
-        # libnvJitLink.so.13 is in the lib output. Do not attach that output to
-        # every package: libnvjitlink would depend on itself and torch's
-        # requiredPythonModules recurses. Only libcusparse needs it here.
-        fixJitlink = cfinal: cprev: {
-          libcusparse = cprev.libcusparse.overrideAttrs (old: {
-            autoPatchelfSearchPath = (old.autoPatchelfSearchPath or [ ]) ++ [
-              (lib.getLib cprev.libnvjitlink)
-            ];
-            preFixup = (old.preFixup or "") + ''
-              if declare -F addAutoPatchelfSearchPath >/dev/null; then
-                addAutoPatchelfSearchPath ${lib.getLib cprev.libnvjitlink}/lib
-              fi
-            '';
-          });
-        };
+        # torch-bin (unfree official wheel) is built against CUDA 13.x and
+        # requires cuda-bindings >= 13.0.3. The locked nixpkgs provides
+        # cudaPackages_13_4 (the default cudaPackages / cudaPackages_13) whose
+        # packages (cuda13.4-cudnn, etc.) are the ones present in the binary
+        # caches. Using the default set with no attribute overrides keeps the
+        # derivation hashes identical to upstream so `nix flake check` can
+        # download them instead of rebuilding.
+        # Previous pins to cudaPackages_13_0 and the NCCL/multiout/jitlink
+        # workarounds are no longer needed: the NCCL source hash matches, the
+        # multiple-outputs.sh joined-name bug is fixed, and 13.4 does not have
+        # the cccl patch conflict that 13.3 had.
+        cudaSet = "cudaPackages_13_4";
         cudaPkgs = import nixpkgs {
           inherit system;
           config = { allowUnfree = true; cudaSupport = true; };
           overlays = [
             (final: prev: {
-              # nixpkgs' hook for extending *every* CUDA package set: overriding
-              # one set (or the `cudaPackages` alias) leaves the stale NCCL
-              # reachable through others (libnvshmem -> openmpi -> ucc).
-              _cuda = prev._cuda.extend (_: prevAttrs: {
-                extensions = prevAttrs.extensions ++ [ fixNccl fixMultiout fixJitlink ];
-              });
+              # Ensure the alias points at the 13.4 set we want.
               cudaPackages = final.${cudaSet};
             })
           ];
@@ -403,7 +328,7 @@
             '';
           };
         } // lib.optionalAttrs onLinux {
-          # torch-bin with CUDA 13.0: nix develop .#cuda
+          # torch-bin with CUDA 13.4: nix develop .#cuda
           cuda = pkgs.mkShell {
             packages = [ cudaPython pkgs.ruff pkgs.gcc ];
             TYPE_NN_SRC = "${type-nn-c}";

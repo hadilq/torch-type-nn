@@ -36,6 +36,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.DEPS_TOKEN || github.token }}
       - uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            extra-substituters = https://cache.nixos-cuda.org
+            extra-trusted-public-keys = cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=
+            accept-flake-config = true
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - name: nix run .#update-deps
         id: deps
