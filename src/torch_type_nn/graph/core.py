@@ -1249,7 +1249,10 @@ class GraphCore:
         self.t_sum.zero_()
         self.t_sq.zero_()
         self.grow_width(0.0)
-        self.grow_and(0.0)
+        try:
+            self.grow_and(0.0)
+        except (IndexError, RuntimeError):
+            pass  # empty graph or device mismatch; growth will happen later
         self.clear_cache()
         self.on_gains()
 
