@@ -541,21 +541,22 @@ class GraphCore:
             self._cache = None
         self.step += 1
 
-    def _param_device(self):
-        """Device of the live parameters (may differ from the birth device)."""
+    def _param_device_dtype(self):
+        """Device and dtype of the live parameters (may differ from birth)."""
         for n in self.nodes:
             store = getattr(n, "store", None)
             if store is not None and hasattr(store, "L"):
-                return store.L.weight.device
-        return self.device
+                w = store.L.weight
+                return w.device, w.dtype
+        return self.device, self.dtype
 
     def cache(self) -> tuple[torch.Tensor, torch.Tensor] | None:
         if not self.cx:
             return None
         if self._cache is None:
-            dev = self._param_device()
-            self._cache = (torch.cat(self.cx).to(dev, self.dtype),
-                           torch.cat(self.ct).to(dev, self.dtype))
+            dev, dt = self._param_device_dtype()
+            self._cache = (torch.cat(self.cx).to(dev, dt),
+                           torch.cat(self.ct).to(dev, dt))
         return self._cache
 
     @property
