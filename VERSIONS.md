@@ -14,11 +14,11 @@ rewritten by the updater.
 
 | Component | Kind | Pin | Locked | Upstream |
 | --- | --- | --- | --- | --- |
-| torch-type-nn | package | `pyproject.toml` | `0.2.0` | — |
-| nixpkgs | flake input | `nixos-unstable` | `1c89083e451e` (2026-10-30) | `1c89083e451e` (matches pin) |
-| flake-utils | flake input | `github:numtide/flake-utils` | `11707dc2f618` (2024-11-13) | `11707dc2f618` (matches pin) |
-| type-nn-c | flake input, vendored C | `github:hadilq/type-nn` | `7333bf79c336` (2026-09-22) | `7333bf79c336` (matches pin) |
-| systems | transitive (flake-utils) | `github:nix-systems/default` | `da67096a3b9b` (2023-04-09) | `da67096a3b9b` (matches pin) |
+| torch-type-nn | package | `pyproject.toml` | `0.2.1` | — |
+| nixpkgs | flake input | `nixos-unstable` | `0bb2eedc20e4` (2026-11-01) | `0bb2eedc20e4` (matches pin) |
+| flake-utils | flake input | `github:numtide/flake-utils` | `b7a79d3fea1e` (2026-10-13) | `b7a79d3fea1e` (matches pin) |
+| type-nn-c | flake input, vendored C | `github:hadilq/type-nn` | `6b8b96735a65` (2026-10-29) | `6b8b96735a65` (matches pin) |
+| systems | transitive (flake-utils) | `github:nix-systems/default` | `da67096a3b9b` (2023-04-09) | `d36eeed142f8` |
 
 Resolved from the locked nixpkgs (the versions `nix develop` and
 `nix flake check` actually build). A missing cell means the eval did
@@ -26,12 +26,12 @@ not run (no Nix, or an unfree package refused).
 
 | Component | Kind | Declared | Resolved |
 | --- | --- | --- | --- |
-| python | nixpkgs | interpreter (flake uses python312) | `3.12.14` |
+| python | nixpkgs | interpreter (flake uses python312) | `3.12.15` |
 | torch | nixpkgs | declared torch>=2.2 | `2.14.1` |
-| numpy | nixpkgs | dev extra | `2.5.2` |
+| numpy | nixpkgs | dev extra | `2.5.3` |
 | pytest | nixpkgs | declared pytest>=8 | `9.1.1` |
 | hatchling | nixpkgs | build-system >=1.24 | `1.31.0` |
-| ruff | nixpkgs | lint, nix flake check | `0.16.8` |
+| ruff | nixpkgs | lint, nix flake check | `0.17.3` |
 | torch-bin | nixpkgs | CUDA shell / checks (unfree) | `2.14.1` |
 
 Benchmark datasets (`benchmarks/datasets.json`). Listed, not bumped:
